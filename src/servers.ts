@@ -197,20 +197,20 @@ export function normalizeServerList(raw: unknown): ServerEntry[] {
  */
 export function validateServer(server: ServerEntry): string[] {
   const problems: string[] = []
-  if (server.name === '') problems.push('name 不能为空')
+  if (server.name === '') problems.push('name must not be empty')
   else if (!SERVER_NAME_PATTERN.test(server.name)) {
-    problems.push(`name「${server.name}」只能用字母/数字/下划线/连字符，且长度 1–32`)
+    problems.push(`name "${server.name}" may only contain letters, digits, underscores and hyphens, and be 1–32 characters long`)
   } else if (RESERVED_NAMES.includes(server.name.toLowerCase())) {
-    problems.push(`name「${server.name}」是保留名，会与 mcp_manager_* 工具冲突`)
+    problems.push(`name "${server.name}" is reserved and would collide with the mcp_manager_* tools`)
   }
-  if (!TRANSPORTS.includes(server.transport)) problems.push(`transport「${String(server.transport)}」不支持`)
+  if (!TRANSPORTS.includes(server.transport)) problems.push(`transport "${String(server.transport)}" is not supported`)
   if (server.transport === 'stdio') {
-    if (server.command.trim() === '') problems.push('stdio 服务器必须填 command')
+    if (server.command.trim() === '') problems.push('a stdio server needs a command')
   } else if (server.url.trim() === '') {
-    problems.push('streamable-http 服务器必须填 url')
+    problems.push('a streamable-http server needs a url')
   }
   if (server.toolCallTimeoutMs < TIMEOUT_MIN_MS || server.toolCallTimeoutMs > TIMEOUT_MAX_MS) {
-    problems.push(`toolCallTimeoutMs 必须在 ${TIMEOUT_MIN_MS}–${TIMEOUT_MAX_MS} 之间`)
+    problems.push(`toolCallTimeoutMs must be between ${TIMEOUT_MIN_MS} and ${TIMEOUT_MAX_MS}`)
   }
   return problems
 }

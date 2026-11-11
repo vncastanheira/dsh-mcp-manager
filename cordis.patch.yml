@@ -10,5 +10,5 @@
     - id: mcp-manager
       name: '@zhengjunyao/dsh-mcp-manager'
       config:
-        announceToAgent: true   # 在系统提示中公告插件（工具 + 能力说明）
-        enabled: true           # 插件总开关
+        announceToAgent: true   # announce the plugin (tools + capabilities) in the system prompt
+        enabled: true           # plugin master switch

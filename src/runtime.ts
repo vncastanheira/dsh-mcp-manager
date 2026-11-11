@@ -307,7 +307,7 @@ export class ManagerRuntime {
   async probe(server: ServerEntry, saved: readonly ServerEntry[]): Promise<ProbeOutcome> {
     const problems = validateServer(server)
     if (problems.length > 0) {
-      return { ok: false, problems, tools: [], durationMs: 0, error: problems.join('；') }
+      return { ok: false, problems, tools: [], durationMs: 0, error: problems.join('; ') }
     }
     return await this.run(async () => {
       await this.stopLocked(server.name)
@@ -395,7 +395,7 @@ export class ManagerRuntime {
     const problems = validateServer(server)
     if (problems.length > 0) {
       entry.phase = 'error'
-      entry.error = problems.join('；')
+      entry.error = problems.join('; ')
       return { ok: false, error: entry.error, tools: [], durationMs: Date.now() - started }
     }
 
@@ -439,7 +439,7 @@ export class ManagerRuntime {
     } else if (outcome.ok) {
       entry.error = null
     } else {
-      entry.error = outcome.error ?? '连接失败'
+      entry.error = outcome.error ?? 'connection failed'
     }
 
     const tools = groupByServer(this.toolNames(), [server.name]).get(server.name) ?? []

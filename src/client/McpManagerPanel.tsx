@@ -5,7 +5,7 @@
  * One screen: the configured servers with their live state, and a form that
  * adds or edits one. Two behaviours worth calling out:
  *
- *   - **Test before you save.** The form's 测试 button posts the *draft*, so the
+ *   - **Test before you save.** The form's Test button posts the *draft*, so the
  *     host connects the definition without persisting it, reports the tools it
  *     offers, disconnects, and restores the previous live set. A typo is caught
  *     here rather than after a save.
@@ -119,11 +119,11 @@ const s = {
 /** The phase badge colour and glyph. */
 function phaseBadge(phase: ServerRuntimeView['phase']): { text: string; color: string } {
   switch (phase) {
-    case 'active': return { text: '● 已连接', color: '#3d8b5f' }
-    case 'waiting': return { text: '◌ 未产出工具', color: '#c9763a' }
-    case 'starting': return { text: '◌ 连接中', color: '#c9763a' }
-    case 'error': return { text: '✖ 失败', color: '#c0504d' }
-    default: return { text: '○ 未加载', color: 'rgba(128,128,128,0.9)' }
+    case 'active': return { text: '● Connected', color: '#3d8b5f' }
+    case 'waiting': return { text: '◌ No tools', color: '#c9763a' }
+    case 'starting': return { text: '◌ Connecting', color: '#c9763a' }
+    case 'error': return { text: '✖ Failed', color: '#c0504d' }
+    default: return { text: '○ Not loaded', color: 'rgba(128,128,128,0.9)' }
   }
 }
 
@@ -281,10 +281,10 @@ export function McpManagerPanel(): JSX.Element {
   return (
     <div style={s.card}>
       <div style={s.row}>
-        <strong style={{ fontSize: '14px' }}>MCP 管理</strong>
+        <strong style={{ fontSize: '14px' }}>MCP Manager</strong>
         <span style={s.muted}>
-          {totals.servers} 个服务器 · 已连接 {totals.active} · MCP 工具 {totals.tools}
-          {totals.broken > 0 ? ` · 失败 ${totals.broken}` : ''}
+          {totals.servers} servers · {totals.active} connected · {totals.tools} MCP tools
+          {totals.broken > 0 ? ` · ${totals.broken} failed` : ''}
         </span>
         <span style={{ flex: 1 }} />
         <button
@@ -293,32 +293,32 @@ export function McpManagerPanel(): JSX.Element {
           disabled={busy !== ''}
           onClick={() => { void act('plugin', async () => await api.setConfig({ enabled: !config.enabled })) }}
         >
-          {config.enabled ? '停用插件' : '启用插件'}
+          {config.enabled ? 'Disable plugin' : 'Enable plugin'}
         </button>
       </div>
 
       <div style={s.muted}>
-        支持 stdio 与 Streamable HTTP；连接与断开都在运行时完成，不需要重启 DSH。
-        服务器提供的工具以 <code>mcp__&lt;服务器名&gt;__&lt;工具名&gt;</code> 出现在会话里。
+        Supports stdio and Streamable HTTP; servers connect and disconnect at runtime, no DSH restart needed.
+        Their tools appear in the session as <code>mcp__&lt;serverName&gt;__&lt;toolName&gt;</code>.
       </div>
 
       {state?.bridgeError != null && state.bridgeError !== '' && (
         <div style={s.err}>
-          找不到 harness 内置的 MCP 桥（@deepseek-ai/dsh-mcp-client）：{state.bridgeError}
+          Cannot find the harness MCP bridge (@deepseek-ai/dsh-mcp-client): {state.bridgeError}
         </div>
       )}
       {state !== null && state.bridge !== null && (
-        <div style={s.muted}>MCP 桥：{state.bridge.source}（{state.bridge.via}）</div>
+        <div style={s.muted}>MCP bridge: {state.bridge.source} ({state.bridge.via})</div>
       )}
       {state !== null && state.dropped > 0 && (
-        <div style={s.warn}>配置文件里有 {state.dropped} 条无法识别或重名的记录，已忽略。</div>
+        <div style={s.warn}>Ignored {state.dropped} unrecognizable or duplicate entries in the config file.</div>
       )}
       {error !== '' && <div style={s.err}>{error}</div>}
       {notice !== '' && <div style={s.ok}>{notice}</div>}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
         {(state?.servers ?? []).length === 0 && (
-          <div style={s.muted}>还没有配置任何 MCP 服务器。点下方「新增服务器」开始。</div>
+          <div style={s.muted}>No MCP servers configured yet. Click "Add server" below to start.</div>
         )}
         {(state?.servers ?? []).map((server) => {
           const view = runtimeOf(server.name)
@@ -326,16 +326,16 @@ export function McpManagerPanel(): JSX.Element {
           const badge = phaseBadge(phase)
           const open = expanded === server.name
           const target = server.transport === 'stdio'
-            ? `${server.command} ${server.args.join(' ')}`.trim() || '（未填 command）'
-            : server.url || '（未填 url）'
+            ? `${server.command} ${server.args.join(' ')}`.trim() || '(no command set)'
+            : server.url || '(no url set)'
           return (
             <div key={server.name} style={s.server}>
               <div style={s.row}>
                 <span style={{ ...s.badge, color: badge.color, borderColor: badge.color }}>{badge.text}</span>
                 <strong style={{ fontSize: '13px' }}>{server.name}</strong>
                 <span style={s.badge}>{server.transport}</span>
-                <span style={s.muted}>工具 {view?.toolCount ?? 0} 个</span>
-                {!server.enabled && <span style={s.muted}>（已停用）</span>}
+                <span style={s.muted}>{view?.toolCount ?? 0} tools</span>
+                {!server.enabled && <span style={s.muted}>(disabled)</span>}
                 <span style={{ flex: 1 }} />
                 <button
                   type="button"
@@ -343,7 +343,7 @@ export function McpManagerPanel(): JSX.Element {
                   disabled={busy !== ''}
                   onClick={() => { void act(`test:${server.name}`, async () => await api.test(server.name)) }}
                 >
-                  测试
+                  Test
                 </button>
                 <button
                   type="button"
@@ -351,7 +351,7 @@ export function McpManagerPanel(): JSX.Element {
                   disabled={busy !== ''}
                   onClick={() => { void act(`toggle:${server.name}`, async () => await api.toggleServer(server.name, !server.enabled)) }}
                 >
-                  {server.enabled ? '停用' : '启用'}
+                  {server.enabled ? 'Disable' : 'Enable'}
                 </button>
                 <button
                   type="button"
@@ -359,18 +359,18 @@ export function McpManagerPanel(): JSX.Element {
                   disabled={busy !== ''}
                   onClick={() => { setForm(formOf(server)); setNotice('') }}
                 >
-                  编辑
+                  Edit
                 </button>
                 <button
                   type="button"
                   style={{ ...s.buttonDanger, ...(busy !== '' ? s.buttonDisabled : {}) }}
                   disabled={busy !== ''}
                   onClick={() => {
-                    if (!window.confirm(`确定删除服务器「${server.name}」？它的 MCP 工具会随之注销。`)) return
+                    if (!window.confirm(`Delete server "${server.name}"? Its MCP tools will be unregistered.`)) return
                     void act(`remove:${server.name}`, async () => await api.removeServer(server.name))
                   }}
                 >
-                  删除
+                  Delete
                 </button>
               </div>
               <div style={s.mono}>{target}</div>
@@ -383,9 +383,9 @@ export function McpManagerPanel(): JSX.Element {
                     style={{ ...s.button, padding: '1px 7px', fontSize: '11px' }}
                     onClick={() => setExpanded(open ? '' : server.name)}
                   >
-                    {open ? '收起工具' : `展开 ${view?.toolCount ?? 0} 个工具`}
+                    {open ? 'Hide tools' : `Show ${view?.toolCount ?? 0} tools`}
                   </button>
-                  {open && <div style={{ ...s.mono, marginTop: '4px' }}>{(view?.tools ?? []).join('、')}</div>}
+                  {open && <div style={{ ...s.mono, marginTop: '4px' }}>{(view?.tools ?? []).join(', ')}</div>}
                 </div>
               )}
             </div>
@@ -397,7 +397,7 @@ export function McpManagerPanel(): JSX.Element {
         ? (
           <div style={s.row}>
             <button type="button" style={s.buttonPrimary} onClick={() => { setForm(blankForm()); setNotice('') }}>
-              新增服务器
+              Add server
             </button>
             <button
               type="button"
@@ -408,7 +408,7 @@ export function McpManagerPanel(): JSX.Element {
                 return { ok: result.ok, message: result.message }
               }) }}
             >
-              重新读取配置
+              Reload config
             </button>
             <button
               type="button"
@@ -419,35 +419,35 @@ export function McpManagerPanel(): JSX.Element {
                 return { ok: result.ok, message: result.message }
               }) }}
             >
-              从旧管理插件导入
+              Import from old manager
             </button>
           </div>
         )
         : (
           <div style={{ ...s.server, borderColor: 'rgba(110,150,220,0.5)' }}>
             <strong style={{ fontSize: '13px' }}>
-              {form.originalName === '' ? '新增服务器' : `编辑「${form.originalName}」`}
+              {form.originalName === '' ? 'Add server' : `Edit "${form.originalName}"`}
             </strong>
 
             <div style={s.row}>
-              <span style={s.label}>名称</span>
+              <span style={s.label}>Name</span>
               <input
                 style={s.input}
                 value={form.name}
-                placeholder="garmin（会成为 mcp__garmin__* 命名空间）"
+                placeholder="garmin (becomes the mcp__garmin__* namespace)"
                 onChange={(event) => update({ name: event.target.value })}
               />
             </div>
 
             <div style={s.row}>
-              <span style={s.label}>传输</span>
+              <span style={s.label}>Transport</span>
               <select
                 style={s.input}
                 value={form.transport}
                 onChange={(event) => update({ transport: event.target.value as DraftForm['transport'] })}
               >
-                <option value="stdio">stdio（本地子进程）</option>
-                <option value="streamable-http">streamable-http（远程 URL）</option>
+                <option value="stdio">stdio (local child process)</option>
+                <option value="streamable-http">streamable-http (remote URL)</option>
               </select>
               <label style={{ ...s.muted, display: 'flex', gap: '4px', alignItems: 'center' }}>
                 <input
@@ -455,7 +455,7 @@ export function McpManagerPanel(): JSX.Element {
                   checked={form.enabled}
                   onChange={(event) => update({ enabled: event.target.checked })}
                 />
-                保存后启用
+                Enable after saving
               </label>
             </div>
 
@@ -463,7 +463,7 @@ export function McpManagerPanel(): JSX.Element {
               ? (
                 <>
                   <div style={s.row}>
-                    <span style={s.label}>命令</span>
+                    <span style={s.label}>Command</span>
                     <input
                       style={s.input}
                       value={form.command}
@@ -472,29 +472,29 @@ export function McpManagerPanel(): JSX.Element {
                     />
                   </div>
                   <div style={s.row}>
-                    <span style={s.label}>参数</span>
+                    <span style={s.label}>Arguments</span>
                     <textarea
                       style={s.textarea}
                       value={form.argsText}
-                      placeholder={'每行一个参数：\ngarmin-mcp'}
+                      placeholder={'One argument per line:\ngarmin-mcp'}
                       onChange={(event) => update({ argsText: event.target.value })}
                     />
                   </div>
                   <div style={s.row}>
-                    <span style={s.label}>环境变量</span>
+                    <span style={s.label}>Environment variables</span>
                     <textarea
                       style={s.textarea}
                       value={form.envText}
-                      placeholder={'每行 KEY=VALUE（可空）'}
+                      placeholder={'KEY=VALUE per line (optional)'}
                       onChange={(event) => update({ envText: event.target.value })}
                     />
                   </div>
                   <div style={s.row}>
-                    <span style={s.label}>工作目录</span>
+                    <span style={s.label}>Working directory</span>
                     <input
                       style={s.input}
                       value={form.cwd}
-                      placeholder="（可空）"
+                      placeholder="(optional)"
                       onChange={(event) => update({ cwd: event.target.value })}
                     />
                   </div>
@@ -512,11 +512,11 @@ export function McpManagerPanel(): JSX.Element {
                     />
                   </div>
                   <div style={s.row}>
-                    <span style={s.label}>请求头</span>
+                    <span style={s.label}>Headers</span>
                     <textarea
                       style={s.textarea}
                       value={form.headersText}
-                      placeholder={'每行 KEY=VALUE，例如：\nAuthorization=Bearer xxx'}
+                      placeholder={'KEY=VALUE per line, e.g.:\nAuthorization=Bearer xxx'}
                       onChange={(event) => update({ headersText: event.target.value })}
                     />
                   </div>
@@ -524,21 +524,21 @@ export function McpManagerPanel(): JSX.Element {
               )}
 
             <div style={s.row}>
-              <span style={s.label}>单次超时</span>
+              <span style={s.label}>Per-call timeout</span>
               <input
                 style={{ ...s.input, maxWidth: '120px' }}
                 value={form.timeoutText}
                 onChange={(event) => update({ timeoutText: event.target.value })}
               />
-              <span style={s.muted}>毫秒（默认 60000）</span>
+              <span style={s.muted}>milliseconds (default 60000)</span>
             </div>
 
             <div style={s.row}>
-              <span style={s.label}>备注</span>
+              <span style={s.label}>Note</span>
               <input
                 style={s.input}
                 value={form.description}
-                placeholder="仅用于显示，不进连接配置"
+                placeholder="Display only; not part of the connection config"
                 onChange={(event) => update({ description: event.target.value })}
               />
             </div>
@@ -550,7 +550,7 @@ export function McpManagerPanel(): JSX.Element {
                 disabled={busy !== ''}
                 onClick={() => { void act('draft-test', async () => await api.test(form.name.trim(), payloadOf(form))) }}
               >
-                测试连接（不保存）
+                Test connection (no save)
               </button>
               <button
                 type="button"
@@ -567,16 +567,16 @@ export function McpManagerPanel(): JSX.Element {
                   })
                 }}
               >
-                保存
+                Save
               </button>
-              <button type="button" style={s.button} onClick={() => setForm(null)}>取消</button>
+              <button type="button" style={s.button} onClick={() => setForm(null)}>Cancel</button>
             </div>
           </div>
         )}
 
       <div style={s.muted}>
-        状态文件：{state?.file ?? '（未知）'}
-        {(state?.legacyCandidates ?? []).length > 0 ? ' · 导入时会依次尝试 mcp-servers.json 等旧位置' : ''}
+        State file: {state?.file ?? '(unknown)'}
+        {(state?.legacyCandidates ?? []).length > 0 ? ' · imports try legacy locations such as mcp-servers.json in order' : ''}
       </div>
     </div>
   )

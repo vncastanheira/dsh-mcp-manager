@@ -211,12 +211,12 @@ export class McpManager {
       this.meta.file = await saveState(next, this.home)
       this.meta.exists = true
     } catch (error) {
-      return { ok: false, message: `写入配置失败：${describe(error)}` }
+      return { ok: false, message: `Failed to write config: ${describe(error)}` }
     }
     try {
       await this.reconcile()
     } catch (error) {
-      return { ok: false, message: `${message}（但重连失败：${describe(error)}）`, snapshot: this.snapshot() }
+      return { ok: false, message: `${message} (but reconnect failed: ${describe(error)})`, snapshot: this.snapshot() }
     }
     return { ok: true, message, snapshot: this.snapshot() }
   }
@@ -224,7 +224,7 @@ export class McpManager {
   /** Patch the plugin-level switches. */
   async patchConfig(patch: Record<string, unknown>): Promise<OpResult> {
     const merged = normalizeConfig({ ...this.state.config, ...patch })
-    return await this.commit({ ...this.state, config: merged }, '插件设置已保存')
+    return await this.commit({ ...this.state, config: merged }, 'Plugin settings saved')
   }
 
   /**
@@ -234,14 +234,14 @@ export class McpManager {
    */
   async addServer(raw: unknown): Promise<OpResult> {
     const server = normalizeServer(raw)
-    if (server === undefined) return { ok: false, message: '服务器定义格式不对，必须是对象' }
+    if (server === undefined) return { ok: false, message: 'Invalid server definition: expected an object' }
     if (findServer(this.state.servers, server.name) !== undefined) {
-      return { ok: false, message: `已存在名为「${server.name}」的服务器；要改用它请用 update` }
+      return { ok: false, message: `A server named "${server.name}" already exists; use update to change it` }
     }
     const problems = validateServer(server)
-    if (problems.length > 0) return { ok: false, message: `定义不合法：${problems.join('；')}` }
+    if (problems.length > 0) return { ok: false, message: `Invalid definition: ${problems.join('; ')}` }
     const next = upsertServer(this.state.servers, server)
-    return await this.commit({ ...this.state, servers: next }, `已添加服务器「${server.name}」`)
+    return await this.commit({ ...this.state, servers: next }, `Added server "${server.name}"`)
   }
 
   /**
@@ -252,15 +252,15 @@ export class McpManager {
    */
   async updateServer(name: string, patch: Record<string, unknown>): Promise<OpResult> {
     const current = findServer(this.state.servers, name)
-    if (current === undefined) return { ok: false, message: `没有名为「${name}」的服务器` }
+    if (current === undefined) return { ok: false, message: `No server named "${name}"` }
     const nextName = typeof patch.name === 'string' && patch.name.trim() !== '' ? patch.name.trim() : current.name
     const merged = applyPatch({ ...current, name: nextName }, patch)
     merged.name = nextName
     if (nextName !== current.name && findServer(this.state.servers, nextName) !== undefined) {
-      return { ok: false, message: `「${nextName}」这个名字已被占用` }
+      return { ok: false, message: `The name "${nextName}" is already taken` }
     }
     const problems = validateServer(merged)
-    if (problems.length > 0) return { ok: false, message: `定义不合法：${problems.join('；')}` }
+    if (problems.length > 0) return { ok: false, message: `Invalid definition: ${problems.join('; ')}` }
 
     let servers = this.state.servers
     if (nextName !== current.name) {
@@ -272,7 +272,7 @@ export class McpManager {
     servers = upsertServer(servers, merged)
     return await this.commit(
       { ...this.state, servers },
-      nextName === current.name ? `已更新「${nextName}」` : `已把「${current.name}」重命名为「${nextName}」`,
+      nextName === current.name ? `Updated "${nextName}"` : `Renamed "${current.name}" to "${nextName}"`,
     )
   }
 
@@ -283,10 +283,10 @@ export class McpManager {
    */
   async removeServer(name: string): Promise<OpResult> {
     const current = findServer(this.state.servers, name)
-    if (current === undefined) return { ok: false, message: `没有名为「${name}」的服务器` }
+    if (current === undefined) return { ok: false, message: `No server named "${name}"` }
     await this.runtime.stop(name)
     const next = removeServer(this.state.servers, name)
-    return await this.commit({ ...this.state, servers: next }, `已删除服务器「${name}」，其 MCP 工具已注销`)
+    return await this.commit({ ...this.state, servers: next }, `Removed server "${name}"; its MCP tools are unregistered`)
   }
 
   /**
@@ -297,11 +297,11 @@ export class McpManager {
    */
   async setEnabled(name: string, enabled: boolean): Promise<OpResult> {
     const current = findServer(this.state.servers, name)
-    if (current === undefined) return { ok: false, message: `没有名为「${name}」的服务器` }
+    if (current === undefined) return { ok: false, message: `No server named "${name}"` }
     const next = upsertServer(this.state.servers, { ...current, enabled })
     return await this.commit(
       { ...this.state, servers: next },
-      enabled ? `已启用「${name}」` : `已停用「${name}」，其 MCP 工具已注销`,
+      enabled ? `Enabled "${name}"` : `Disabled "${name}"; its MCP tools are unregistered`,
     )
   }
 
@@ -320,15 +320,15 @@ export class McpManager {
     if (draft !== undefined) {
       const server = normalizeServer(draft)
       if (server === undefined) {
-        return { ok: false, message: '草稿定义格式不对，必须是对象', tools: [], snapshot: this.snapshot() }
+        return { ok: false, message: 'Invalid draft definition: expected an object', tools: [], snapshot: this.snapshot() }
       }
       const outcome = await this.runtime.probe(server, this.state.servers)
       const head = outcome.ok
-        ? `「${server.name}」连接成功，提供 ${outcome.tools.length} 个工具（${outcome.durationMs} ms）`
-        : `「${server.name}」连接失败：${outcome.error ?? '未知原因'}`
+        ? `"${server.name}" connected successfully, serving ${outcome.tools.length} tools (${outcome.durationMs} ms)`
+        : `"${server.name}" failed to connect: ${outcome.error ?? 'unknown cause'}`
       return {
         ok: outcome.ok,
-        message: outcome.tools.length > 0 ? `${head}：${outcome.tools.slice(0, 12).join('、')}${outcome.tools.length > 12 ? ' …' : ''}` : head,
+        message: outcome.tools.length > 0 ? `${head}: ${outcome.tools.slice(0, 12).join(', ')}${outcome.tools.length > 12 ? ' …' : ''}` : head,
         tools: outcome.tools,
         snapshot: this.snapshot(),
       }
@@ -336,15 +336,15 @@ export class McpManager {
 
     const target = name !== undefined ? findServer(this.state.servers, name) : undefined
     if (target === undefined) {
-      return { ok: false, message: '请给出要测试的服务器名，或直接给一份草稿定义', tools: [], snapshot: this.snapshot() }
+      return { ok: false, message: 'Provide the name of the server to test, or a draft definition', tools: [], snapshot: this.snapshot() }
     }
     const outcome = await this.runtime.start(target)
     const head = outcome.ok
-      ? `「${target.name}」重新连接成功，提供 ${outcome.tools.length} 个工具（${outcome.durationMs} ms）`
-      : `「${target.name}」连接失败：${outcome.error ?? '未注册任何工具（可能仍在重连，或该服务器没有暴露工具）'}`
+      ? `"${target.name}" reconnected successfully, serving ${outcome.tools.length} tools (${outcome.durationMs} ms)`
+      : `"${target.name}" failed to connect: ${outcome.error ?? 'no tools registered (it may still be reconnecting, or the server exposes no tools)'}`
     return {
       ok: outcome.ok,
-      message: outcome.tools.length > 0 ? `${head}：${outcome.tools.slice(0, 12).join('、')}${outcome.tools.length > 12 ? ' …' : ''}` : head,
+      message: outcome.tools.length > 0 ? `${head}: ${outcome.tools.slice(0, 12).join(', ')}${outcome.tools.length > 12 ? ' …' : ''}` : head,
       tools: outcome.tools,
       snapshot: this.snapshot(),
     }
@@ -376,18 +376,18 @@ export class McpManager {
       const additions = accepted.filter((server) => findServer(this.state.servers, server.name) === undefined)
       const skipped = accepted.length - additions.length
       if (additions.length === 0) {
-        return { ok: true, message: `${candidate} 里的 ${accepted.length} 个服务器都已存在，未改动`, snapshot: this.snapshot() }
+        return { ok: true, message: `All ${accepted.length} servers in ${candidate} already exist; nothing changed`, snapshot: this.snapshot() }
       }
       let servers = this.state.servers
       for (const server of additions) servers = upsertServer(servers, server)
       const result = await this.commit(
         { ...this.state, servers },
-        `已从 ${candidate} 导入 ${additions.length} 个服务器`
-        + (skipped > 0 ? `（${skipped} 个同名已存在，跳过）` : ''),
+        `Imported ${additions.length} servers from ${candidate}`
+        + (skipped > 0 ? ` (${skipped} skipped: the name already existed)` : ''),
       )
       return result
     }
-    return { ok: false, message: `没有找到可导入的文件。已尝试：${tried.join('、')}` }
+    return { ok: false, message: `No importable file found. Tried: ${tried.join(', ')}` }
   }
 
   /** Whether the harness bridge is resolvable (used by status surfaces). */

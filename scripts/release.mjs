@@ -1,27 +1,28 @@
 #!/usr/bin/env node
 /**
- * DSH 插件发布脚本（零依赖，Node >= 22）
+ * DSH plugin release script (zero dependencies, Node >= 22)
  * ---------------------------------------------------------------------------
- * 目标：把「版本纪律」变成脚本里的硬门禁，而不是靠人记住。
+ * Goal: make "release discipline" a hard gate inside the script instead of
+ * something a human has to remember.
  *
- *   semver 校验/推档  →  git tag  →  npm publish --tag  →  聚合同步  →  写 CHANGELOG
+ *   semver check/bump  →  git tag  →  npm publish --tag  →  aggregate sync  →  write CHANGELOG
  *
- * 核心铁律（脚本会拒绝执行不合规的发布）：
- *   - patch 只装修复，绝不装破坏性变更
- *   - 0.x 阶段：breaking → minor（^0.2.0 == >=0.2.0 <0.3.0，不跨 minor）
- *   1.x+ 阶段：breaking → major
- *   功能 → minor；修复 → patch
+ * Core rules (the script refuses a non-compliant release):
+ *   - a patch release only carries fixes, never breaking changes
+ *   - 0.x phase: breaking → minor (^0.2.0 == >=0.2.0 <0.3.0, never crosses a minor)
+ *   1.x+ phase: breaking → major
+ *   features → minor; fixes → patch
  *
- * 用法（默认 dry-run，只有显式 --publish 才会真的写 registry）：
- *   node scripts/release.mjs --bump auto                 # 预演
- *   node scripts/release.mjs --bump auto --publish       # 真发
+ * Usage (dry-run by default; only an explicit --publish writes to the registry):
+ *   node scripts/release.mjs --bump auto                 # preview
+ *   node scripts/release.mjs --bump auto --publish       # release for real
  *   node scripts/release.mjs --version 0.3.0 --publish
- *   node scripts/release.mjs --pre rc --bump minor --publish   # 发 0.3.0-rc.1（dist-tag next）
- *   node scripts/release.mjs --line 0.1 --bump patch --publish # 维护线：dist-tag 0-1
- *   node scripts/release.mjs --deprecate 0.2.1 "有严重 bug，请升 0.2.2"
- *   node scripts/release.mjs --check                     # CI/发布前只做校验
+ *   node scripts/release.mjs --pre rc --bump minor --publish   # publish 0.3.0-rc.1 (dist-tag next)
+ *   node scripts/release.mjs --line 0.1 --bump patch --publish # maintenance line: dist-tag 0-1
+ *   node scripts/release.mjs --deprecate 0.2.1 "serious bug, please upgrade to 0.2.2"
+ *   node scripts/release.mjs --check                     # validation only, for CI / before release
  *
- * 退出码：0 成功 / 1 失败（含纪律违规、校验未过）
+ * Exit code: 0 success / 1 failure (including discipline violations and failed checks)
  */
 
 import { spawnSync } from 'node:child_process';
@@ -30,7 +31,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
-// 0. 基础设施
+// 0. Infrastructure
 // ---------------------------------------------------------------------------
 
 const C = process.stdout.isTTY
@@ -49,7 +50,7 @@ const die = (m) => {
   throw new Abort(m);
 };
 
-/** 跑命令；throwOnFail=false 时返回 {code, stdout, stderr} 不抛。 */
+/** Run a command; with throwOnFail=false it returns {code, stdout, stderr} instead of throwing. */
 function sh(cmd, args, { cwd = process.cwd(), env = {}, throwOnFail = true, quiet = false } = {}) {
   const r = spawnSync(cmd, args, {
     cwd,
@@ -58,17 +59,17 @@ function sh(cmd, args, { cwd = process.cwd(), env = {}, throwOnFail = true, quie
     stdio: quiet ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
   });
   if (r.error) {
-    if (throwOnFail) die(`无法执行 \`${cmd}\`：${r.error.message}`);
+    if (throwOnFail) die(`Cannot run \`${cmd}\`: ${r.error.message}`);
     return { code: 127, stdout: '', stderr: r.error.message };
   }
   const out = { code: r.status ?? 1, stdout: (r.stdout ?? '').trim(), stderr: (r.stderr ?? '').trim() };
-  if (out.code !== 0 && throwOnFail) die(`\`${cmd} ${args.join(' ')}\` 失败（exit ${out.code}）\n${out.stderr || out.stdout}`);
+  if (out.code !== 0 && throwOnFail) die(`\`${cmd} ${args.join(' ')}\` failed (exit ${out.code})\n${out.stderr || out.stdout}`);
   return out;
 }
 const trySh = (cmd, args, opts) => sh(cmd, args, { ...opts, throwOnFail: false });
 
 // ---------------------------------------------------------------------------
-// 1. 最小 semver 实现（不引依赖）
+// 1. Minimal semver implementation (no dependencies)
 // ---------------------------------------------------------------------------
 
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
@@ -87,7 +88,7 @@ function parseSemver(v) {
 
 const cmpPre = (a, b) => {
   if (a.length === 0 && b.length === 0) return 0;
-  if (a.length === 0) return 1; // 正式版 > 预发布
+  if (a.length === 0) return 1; // a stable release sorts above a prerelease
   if (b.length === 0) return -1;
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     const x = a[i], y = b[i];
@@ -107,21 +108,21 @@ const cmpPre = (a, b) => {
 
 function compareSemver(a, b) {
   const A = parseSemver(a), B = parseSemver(b);
-  if (!A || !B) die(`无法比较非法版本：${a} / ${b}`);
+  if (!A || !B) die(`Cannot compare invalid versions: ${a} / ${b}`);
   for (const k of ['major', 'minor', 'patch']) if (A[k] !== B[k]) return A[k] < B[k] ? -1 : 1;
   return cmpPre(A.prerelease, B.prerelease);
 }
 
 function incSemver(v, kind) {
   const p = parseSemver(v);
-  if (!p) die(`当前版本非法：${v}`);
+  if (!p) die(`Invalid current version: ${v}`);
   if (kind === 'major') return `${p.major + 1}.0.0`;
   if (kind === 'minor') return `${p.major}.${p.minor + 1}.0`;
   if (kind === 'patch') return `${p.major}.${p.minor}.${p.patch + 1}`;
-  die(`未知的 bump 类型：${kind}`);
+  die(`Unknown bump kind: ${kind}`);
 }
 
-/** base 形如 0.3.0；current 形如 0.3.0-rc.2 → rc.3，否则 rc.1。 */
+/** `base` looks like 0.3.0; `current` like 0.3.0-rc.2 → rc.3, otherwise rc.1. */
 const nextPreNumber = (current, base) => {
   const p = parseSemver(current);
   if (p && `${p.major}.${p.minor}.${p.patch}` === base && p.prerelease.length >= 2) {
@@ -132,7 +133,7 @@ const nextPreNumber = (current, base) => {
 };
 
 // ---------------------------------------------------------------------------
-// 2. 参数解析
+// 2. Argument parsing
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
@@ -146,7 +147,7 @@ function parseArgs(argv) {
     const a = argv[i];
     const need = () => {
       const v = argv[++i];
-      if (v === undefined) die(`参数 ${a} 缺少取值`);
+      if (v === undefined) die(`Argument ${a} needs a value`);
       return v;
     };
     switch (a) {
@@ -170,55 +171,55 @@ function parseArgs(argv) {
       case '--deprecate': {
         const v = need();
         const m = argv[++i];
-        if (m === undefined) die('--deprecate 需要两个参数：<版本> "<原因>"');
+        if (m === undefined) die('--deprecate needs two arguments: <version> "<reason>"');
         o.deprecate = { version: v, message: m };
         break;
       }
       case '--help': case '-h': o.help = true; break;
       default:
-        if (a.startsWith('--')) die(`未知参数：${a}（用 --help 看用法）`);
+        if (a.startsWith('--')) die(`Unknown argument: ${a} (see --help)`);
     }
   }
   return o;
 }
 
 const HELP = `
-DSH 插件发布脚本（默认 dry-run，需 --publish 才真发）
+DSH plugin release script (dry-run by default; --publish actually releases)
 
-  版本
-    --bump <auto|patch|minor|major>   按提交推档（auto = 读 conventional commits）
-    --version <x.y.z>                 直接指定目标版本
-    --pre <rc|beta|alpha>             发预发布，如 --pre rc → 0.2.1-rc.1（dist-tag 默认 next）
-    --line <x.y>                      维护线发布（如 0.1），dist-tag 默认 0-1
+  Version
+    --bump <auto|patch|minor|major>   derive the bump from commits (auto = read conventional commits)
+    --version <x.y.z>                 set the target version directly
+    --pre <rc|beta|alpha>             publish a prerelease, e.g. --pre rc → 0.2.1-rc.1 (dist-tag next by default)
+    --line <x.y>                      maintenance-line release (e.g. 0.1), dist-tag 0-1 by default
 
-  分档
-    --tag <name>                      npm dist-tag（默认：正式 → latest，预发布 → next）
+  Dist-tag
+    --tag <name>                      npm dist-tag (default: stable → latest, prerelease → next)
 
-  动作
-    --publish                         真正执行（默认只预演）
-    --check                           只做发布前校验（CI 用）
-    --deprecate <ver> "<msg>"         弃用某个已发布版本（不发布新版本）
-    --yes                             跳过交互确认
+  Actions
+    --publish                         actually run (preview only otherwise)
+    --check                           run the pre-release checks only (for CI)
+    --deprecate <ver> "<msg>"         deprecate a published version (publishes nothing)
+    --yes                             skip the interactive confirmation
 
-  跳过
+  Skipping
     --skip-git / --skip-npm / --skip-aggregates / --skip-changelog / --allow-dirty
-    --branch <name>                   指定发布分支（默认当前分支）
-    --remote <name>                   git remote（默认 origin）
-    --json                            输出机器可读结果
+    --branch <name>                   release branch (defaults to the current branch)
+    --remote <name>                   git remote (default origin)
+    --json                            machine-readable output
 `;
 
 // ---------------------------------------------------------------------------
-// 3. 仓库上下文
+// 3. Repository context
 // ---------------------------------------------------------------------------
 
 function readJson(p) {
-  try { return JSON.parse(readFileSync(p, 'utf8')); } catch (e) { die(`无法解析 ${p}：${e.message}`); }
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch (e) { die(`Cannot parse ${p}: ${e.message}`); }
 }
 
 function loadContext(cwd) {
   const root = resolve(cwd);
   const pkgPath = join(root, 'package.json');
-  if (!existsSync(pkgPath)) die(`当前目录没有 package.json：${root}`);
+  if (!existsSync(pkgPath)) die(`No package.json in the current directory: ${root}`);
   const pkg = readJson(pkgPath);
 
   const cfgPath = join(root, 'release.config.json');
@@ -233,10 +234,10 @@ function loadContext(cwd) {
 const git = (ctx, args, opts = {}) => trySh('git', args, { cwd: ctx.root, ...opts }).stdout;
 
 // ---------------------------------------------------------------------------
-// 4. 提交分析与版本纪律
+// 4. Commit analysis and version discipline
 // ---------------------------------------------------------------------------
 
-/** 取自 since 起的提交（since 为空 → 全量历史）。 */
+/** Commits since `since` (an empty `since` → the full history). */
 function collectCommits(ctx, since) {
   const range = since ? `${since}..HEAD` : 'HEAD';
   const raw = git(ctx, ['log', range, '--no-merges', '--pretty=format:%s%x1f%b%x1e']);
@@ -267,14 +268,15 @@ function classifyCommits(commits) {
 }
 
 /**
- * 版本纪律：从「当前版本 + 变更性质」推出**最低允许**的 bump。
- *   breaking: 0.x → minor；>=1.x → major
+ * Version discipline: derive the **minimum allowed** bump from the current
+ * version and the nature of the changes.
+ *   breaking: 0.x → minor; >=1.x → major
  *   feat:     minor
- *   其它:     patch
+ *   other:    patch
  */
 function requiredBump(currentVersion, changes) {
   const cur = parseSemver(currentVersion);
-  if (!cur) die(`package.json version 非法：${currentVersion}`);
+  if (!cur) die(`Invalid package.json version: ${currentVersion}`);
   if (changes.breaking.length > 0) return cur.major === 0 ? 'minor' : 'major';
   if (changes.feat.length > 0) return 'minor';
   return 'patch';
@@ -283,63 +285,63 @@ function requiredBump(currentVersion, changes) {
 const RANK = { patch: 0, minor: 1, major: 2 };
 
 /**
- * 校验目标版本满足纪律：
- *  - 目标 bump 档位不得低于 required（0.x 的 breaking 必须走 minor）
- *  - patch 档位一律不允许含 breaking —— 这是唯一真会坑到 ^x.y.z 用户的场景
+ * Check that the target version satisfies the discipline:
+ *  - the target bump level must not be below `required` (a 0.x breaking change must go through minor)
+ *  - a patch level may never contain a breaking change — the only case that really hurts ^x.y.z users
  */
 function assertDiscipline(currentVersion, targetVersion, changes) {
   const cur = parseSemver(currentVersion);
   const tgt = parseSemver(targetVersion);
-  if (!cur || !tgt) die('版本号非法，无法做纪律校验');
-  if (compareSemver(targetVersion, currentVersion) <= 0) die(`目标版本 ${targetVersion} 不大于当前版本 ${currentVersion}`);
+  if (!cur || !tgt) die('Invalid version numbers; cannot check the release discipline');
+  if (compareSemver(targetVersion, currentVersion) <= 0) die(`Target version ${targetVersion} is not greater than the current version ${currentVersion}`);
 
   const req = requiredBump(currentVersion, changes);
   const curBase = `${cur.major}.${cur.minor}.${cur.patch}`;
   const tgtBase = `${tgt.major}.${tgt.minor}.${tgt.patch}`;
 
-  // 预发布：base 相同或按 required 递增即可
+  // Prerelease: an unchanged base, or an increment consistent with `required`, is enough
   if (tgt.prerelease.length > 0) {
     const sameBase = tgtBase === curBase;
     const bumped = { major: tgt.major > cur.major, minor: tgt.major === cur.major && tgt.minor > cur.minor, patch: tgtBase === incSemver(curBase, 'patch') };
     if (sameBase) {
-      // 同 base 的预发布视为「演练下一个版本的补丁档」，不允许在其中夹带 breaking
+      // A prerelease of the same base rehearses a patch release of the next version; no breaking change may ride in it
       if (changes.breaking.length > 0) {
         die([
-          `不允许在「同 base 的预发布」里夹带破坏性变更（${curBase} → ${targetVersion}）。`,
-          `0.x 阶段破坏性变更必须走 minor：${incSemver(curBase, 'minor')}-${(tgt.prerelease[0] || 'rc')}.1 起。`,
+          `Breaking changes are not allowed inside a prerelease of the same base version (${curBase} → ${targetVersion}).`,
+          `In the 0.x phase a breaking change must go through a minor: start at ${incSemver(curBase, 'minor')}-${(tgt.prerelease[0] || 'rc')}.1.`,
         ].join('\n'));
       }
       return { required: req, level: 'patch' };
     }
-    if (req === 'major' && !bumped.major) die(`存在破坏性变更，${cur.major >= 1 ? '必须走 major' : '必须走 minor'}：目标 ${targetVersion} 不够`);
-    if (req === 'minor' && !bumped.major && !bumped.minor) die(`存在${changes.breaking.length ? '破坏性变更' : '新功能'}，必须走 minor：目标 ${targetVersion} 不够`);
+    if (req === 'major' && !bumped.major) die(`Breaking changes are present; this ${cur.major >= 1 ? 'must be a major' : 'must be a minor'} release: target ${targetVersion} is not enough`);
+    if (req === 'minor' && !bumped.major && !bumped.minor) die(`There are ${changes.breaking.length ? 'breaking changes' : 'new features'}; this must be a minor release: target ${targetVersion} is not enough`);
     return { required: req, level: bumped.major ? 'major' : bumped.minor ? 'minor' : 'patch' };
   }
 
   if (changes.breaking.length > 0) {
     if (cur.major === 0 && !(tgt.major === 0 && tgt.minor > cur.minor)) {
       die([
-        `破坏性变更必须走 minor（0.x 阶段）：当前 ${currentVersion}。`,
-        `  原因：^${cur.major}.${cur.minor}.${cur.patch} 等价于 >=${cur.major}.${cur.minor}.${cur.patch} <${cur.major}.${cur.minor + 1}.0，`,
-        `  不跨 minor。破坏性变更放进 minor，留在旧 minor 的用户不会被自动升级。`,
-        `  推荐目标：${incSemver(currentVersion, 'minor')}`,
+        `Breaking changes must go through a minor (0.x phase): currently ${currentVersion}.`,
+        `  Reason: ^${cur.major}.${cur.minor}.${cur.patch} means >=${cur.major}.${cur.minor}.${cur.patch} <${cur.major}.${cur.minor + 1}.0,`,
+        `  so it never crosses a minor. With the breaking change in a minor, users staying on the old minor are not upgraded automatically.`,
+        `  Suggested target: ${incSemver(currentVersion, 'minor')}`,
       ].join('\n'));
     }
     if (cur.major >= 1 && tgt.major === cur.major) {
-      die(`破坏性变更必须走 major：当前 ${currentVersion} → 推荐 ${incSemver(currentVersion, 'major')}（目标 ${targetVersion} 仍在 ${cur.major}.x）`);
+      die(`Breaking changes must go through a major: currently ${currentVersion} → suggested ${incSemver(currentVersion, 'major')} (target ${targetVersion} is still ${cur.major}.x)`);
     }
   }
   if (changes.feat.length > 0 && tgt.major === cur.major && tgt.minor === cur.minor) {
-    die(`存在新功能，必须走 minor：当前 ${currentVersion} → 推荐 ${incSemver(currentVersion, 'minor')}（目标 ${targetVersion} 只是 patch）`);
+    die(`There are new features, so this must be a minor release: currently ${currentVersion} → suggested ${incSemver(currentVersion, 'minor')} (target ${targetVersion} is only a patch)`);
   }
 
   const level = tgt.major > cur.major ? 'major' : tgt.minor > cur.minor ? 'minor' : 'patch';
-  if (RANK[level] < RANK[req]) die(`目标版本 ${targetVersion} 的档位（${level}）低于纪律要求（${req}）`);
+  if (RANK[level] < RANK[req]) die(`Target version ${targetVersion} is a ${level} release, below the level the discipline requires (${req})`);
   return { required: req, level };
 }
 
 // ---------------------------------------------------------------------------
-// 5. 发布前校验
+// 5. Pre-release checks
 // ---------------------------------------------------------------------------
 
 function npmView(pkgName, field) {
@@ -354,25 +356,26 @@ function checkCompatDeclarations(ctx) {
   const pkg = ctx.pkg;
 
   if (!pkg.dsh?.engines?.dsh) {
-    issues.push('缺少 `dsh.engines.dsh`（生态惯例声明；dshmarket 实际读 peer 并集，但两者都要有）');
+    issues.push('Missing `dsh.engines.dsh` (the ecosystem convention; dshmarket actually reads the peer union, but both must be present)');
   } else {
     notes.push(`dsh.engines.dsh = ${pkg.dsh.engines.dsh}`);
   }
 
   const peers = Object.entries(pkg.peerDependencies || {}).filter(([n]) => n.startsWith('@deepseek-ai/dsh'));
-  if (peers.length === 0) issues.push('缺少 `@deepseek-ai/dsh*` 的 peerDependencies（插件市场靠它算兼容范围）');
-  else notes.push(`peer 兼容声明 ${peers.length} 条：${peers.map(([n, v]) => `${n}@${v}`).join('、')}`);
+  if (peers.length === 0) issues.push('Missing the `@deepseek-ai/dsh*` peerDependencies (the plugin marketplace computes the compatibility range from them)');
+  else notes.push(`peer compatibility declarations (${peers.length}): ${peers.map(([n, v]) => `${n}@${v}`).join(', ')}`);
 
-  if (!pkg.engines?.node) issues.push('缺少 `engines.node`（Node 版本不兼容应在安装时报错，而不是静默坏）');
+  if (!pkg.engines?.node) issues.push('Missing `engines.node` (an incompatible Node version should fail at install time instead of breaking silently)');
 
   const files = pkg.files || [];
-  if (!files.includes('CHANGELOG.md')) issues.push('`files` 未包含 CHANGELOG.md（变更记录不会进 tarball）');
-  // 分发目录必须被 `files` 覆盖。传统布局是 `lib/`；bundle 型插件的代码可以放在自定义目录
-  // （如 dsh-wechat-clawbot 的 dsh-wechat-bot/ + dsh-client-wechat-ui/，压根没有 lib/），
-  // 这时按 main / exports / dsh.bundle.patch 实际声明的入口路径来校验，避免对合法布局误报。
-  // 2026-09-17：dsh-wechat-clawbot 发布时踩到该误报，改为布局自适应。
+  if (!files.includes('CHANGELOG.md')) issues.push('`files` does not include CHANGELOG.md (the changelog would not be in the tarball)');
+  // The distribution directory must be covered by `files`. The traditional layout is `lib/`; bundle-style
+  // plugins may keep their code in custom directories (e.g. dsh-wechat-clawbot has dsh-wechat-bot/ +
+  // dsh-client-wechat-ui/ and no lib/ at all). In that case validate the entry paths actually declared by
+  // main / exports / dsh.bundle.patch, so a legal layout is not reported as an error.
+  // 2026-09-17: dsh-wechat-clawbot hit this false positive at release time; the check became layout-adaptive.
   if (existsSync(join(ctx.root, 'lib'))) {
-    if (!files.includes('lib')) issues.push('`files` 未包含 lib');
+    if (!files.includes('lib')) issues.push('`files` does not include lib');
   } else {
     const targets = new Set();
     if (typeof pkg.main === 'string') targets.add(pkg.main)
@@ -383,7 +386,7 @@ function checkCompatDeclarations(ctx) {
     if (pkg.dsh?.bundle?.patch) targets.add(pkg.dsh.bundle.patch)
     const uncovered = [...targets].filter((rel) => {
       const clean = String(rel).replace(/^\.\//, '')
-      // package.json 永远被 npm 打进 tarball，与 files 无关；README/LICENSE/CHANGELOG 同理自动包含。
+      // package.json is always packed by npm regardless of `files`; README/LICENSE/CHANGELOG are included automatically.
       if (clean === 'package.json' || /^(README|LICENSE|CHANGELOG)(\.|$)/i.test(clean)) return false
       const top = clean.split('/')[0]
       return !files.some((f) => {
@@ -391,55 +394,55 @@ function checkCompatDeclarations(ctx) {
         return fc === clean || fc === top || clean.startsWith(`${fc}/`)
       })
     })
-    if (uncovered.length) issues.push(`\`files\` 未覆盖声明的入口路径：${uncovered.join('、')}`)
+    if (uncovered.length) issues.push(`\`files\` does not cover the declared entry paths: ${uncovered.join(', ')}`)
   }
 
-  // cordis.patch.yml 的 name 必须与包名一致（改名最易漏这里）
+  // cordis.patch.yml's name must match the package name (renaming is the easiest thing to forget here)
   const patchRel = pkg.dsh?.bundle?.patch;
   if (patchRel) {
     const patchPath = join(ctx.root, patchRel);
-    if (!existsSync(patchPath)) issues.push(`dsh.bundle.patch 指向的文件不存在：${patchRel}`);
+    if (!existsSync(patchPath)) issues.push(`dsh.bundle.patch points at a missing file: ${patchRel}`);
     else {
       const m = /^name:\s*(.+)$/m.exec(readFileSync(patchPath, 'utf8'));
       const declared = m?.[1]?.trim().replace(/^['"]|['"]$/g, '');
-      if (declared && declared !== pkg.name) issues.push(`cordis.patch.yml 的 name(${declared}) ≠ package.json name(${pkg.name})`);
-      else if (declared) notes.push(`cordis bundle name 一致：${declared}`);
+      if (declared && declared !== pkg.name) issues.push(`cordis.patch.yml name (${declared}) ≠ package.json name (${pkg.name})`);
+      else if (declared) notes.push(`cordis bundle name matches: ${declared}`);
     }
   } else {
-    issues.push('缺少 `dsh.bundle.patch`');
+    issues.push('Missing `dsh.bundle.patch`');
   }
 
-  if (!pkg.repository?.url) issues.push('缺少 `repository.url`');
+  if (!pkg.repository?.url) issues.push('Missing `repository.url`');
   return { issues, notes };
 }
 
 function checkChangelog(ctx) {
   const issues = [];
   if (!existsSync(ctx.changelogPath)) {
-    issues.push('缺少 CHANGELOG.md（每个破坏性版本都要有迁移说明）');
+    issues.push('Missing CHANGELOG.md (every breaking release needs migration notes)');
     return { issues, notes: [] };
   }
   const text = readFileSync(ctx.changelogPath, 'utf8');
   const notes = [];
-  if (!/\[Unreleased\]/i.test(text)) issues.push('CHANGELOG.md 缺少 `## [Unreleased]` 段落');
+  if (!/\[Unreleased\]/i.test(text)) issues.push('CHANGELOG.md is missing the `## [Unreleased]` section');
   const cur = ctx.pkg.version;
-  if (!text.includes(`[${cur}]`)) notes.push(`CHANGELOG.md 尚无 [${cur}] 段落（发布时会自动补写）`);
-  else notes.push(`CHANGELOG.md 已含 [${cur}] 段落`);
+  if (!text.includes(`[${cur}]`)) notes.push(`CHANGELOG.md has no [${cur}] section yet (it is written automatically on release)`);
+  else notes.push(`CHANGELOG.md already has the [${cur}] section`);
   return { issues, notes };
 }
 
 function runChecks(ctx, { strict = true, allowDirty = false } = {}) {
-  info(`发布前校验：${ctx.pkg.name}@${ctx.pkg.version}（${ctx.root}）`);
+  info(`Pre-release checks: ${ctx.pkg.name}@${ctx.pkg.version} (${ctx.root})`);
   const issues = [];
   const notes = [];
 
-  if (!ctx.gitReady) issues.push('不是 git 仓库（或 git 不可用）');
+  if (!ctx.gitReady) issues.push('Not a git repository (or git is unavailable)');
   else {
     const dirty = git(ctx, ['status', '--porcelain']);
-    if (dirty && !allowDirty) issues.push(`工作区不干净（${dirty.split('\n').length} 个改动），先提交再发布`);
-    else if (dirty) notes.push(`工作区不干净（${dirty.split('\n').length} 个改动）—— --allow-dirty 已放行`);
+    if (dirty && !allowDirty) issues.push(`Working tree is dirty (${dirty.split('\n').length} changes); commit before releasing`);
+    else if (dirty) notes.push(`Working tree is dirty (${dirty.split('\n').length} changes) — allowed by --allow-dirty`);
     const branch = git(ctx, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    notes.push(`分支：${branch}`);
+    notes.push(`Branch: ${branch}`);
   }
 
   const comp = checkCompatDeclarations(ctx);
@@ -450,37 +453,37 @@ function runChecks(ctx, { strict = true, allowDirty = false } = {}) {
   issues.push(...cl.issues);
   notes.push(...cl.notes);
 
-  // 目录名 ≠ 包名 是这些仓库的历史坑，明确提示
+  // A directory name different from the package name is a historical trap in these repositories; call it out
   const dirName = ctx.root.split('/').pop();
-  if (dirName !== ctx.pkg.name) notes.push(`注意：目录名 ${dirName} ≠ 包名 ${ctx.pkg.name}（脚本一律以 package.json 为准）`);
+  if (dirName !== ctx.pkg.name) notes.push(`Note: directory name ${dirName} ≠ package name ${ctx.pkg.name} (the script always trusts package.json)`);
 
   for (const n of notes) dim(n);
   if (issues.length > 0) {
     for (const i of issues) bad(i);
-    if (strict) die(`${issues.length} 项校验未通过`);
+    if (strict) die(`${issues.length} checks failed`);
     return { ok: false, issues, notes };
   }
-  ok('校验全部通过');
+  ok('All checks passed');
   return { ok: true, issues: [], notes };
 }
 
 // ---------------------------------------------------------------------------
-// 6. CHANGELOG 生成
+// 6. CHANGELOG generation
 // ---------------------------------------------------------------------------
 
 const CHANGELOG_HEADER = (name) => `# Changelog
 
-> ${name} 的全部版本变更。本文件由 \`scripts/release.mjs\` 在发布时自动补写。
-> 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
+> All version changes of ${name}. This file is written automatically by \`scripts/release.mjs\` at release time.
+> Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [Semantic Versioning](https://semver.org/).
 
 `;
 
 function categorize(changes) {
   const sec = [];
-  if (changes.breaking.length) sec.push(['⚠️ 破坏性变更 (BREAKING)', changes.breaking]);
-  if (changes.feat.length) sec.push(['新增 (Added)', changes.feat]);
-  if (changes.fix.length) sec.push(['修复 (Fixed)', changes.fix]);
-  if (changes.other.length) sec.push(['其它 (Changed)', changes.other]);
+  if (changes.breaking.length) sec.push(['⚠️ Breaking changes (BREAKING)', changes.breaking]);
+  if (changes.feat.length) sec.push(['Added', changes.feat]);
+  if (changes.fix.length) sec.push(['Fixed', changes.fix]);
+  if (changes.other.length) sec.push(['Changed', changes.other]);
   return sec;
 }
 
@@ -493,24 +496,24 @@ function renderEntry(ctx, version, date, changes, extraNotes = []) {
     lines.push('');
   }
   const dshRange = pkg.dsh?.engines?.dsh;
-  lines.push('### 兼容性 (Compatibility)', '');
-  if (dshRange) lines.push(`- DSH：\`${dshRange}\``);
+  lines.push('### Compatibility', '');
+  if (dshRange) lines.push(`- DSH: \`${dshRange}\``);
   const nodeRange = pkg.engines?.node;
-  if (nodeRange) lines.push(`- Node：\`${nodeRange}\``);
+  if (nodeRange) lines.push(`- Node: \`${nodeRange}\``);
   const dshPeers = [...new Set(
     Object.entries(pkg.peerDependencies || {})
       .filter(([n]) => n.startsWith('@deepseek-ai/dsh'))
       .map(([, v]) => v),
   )];
-  if (dshPeers.length) lines.push(`- DSH peer：${dshPeers.join(' || ')}`);
+  if (dshPeers.length) lines.push(`- DSH peer: ${dshPeers.join(' || ')}`);
   if (pkg.dependencies && Object.keys(pkg.dependencies).length) {
-    lines.push(`- 运行时依赖：${Object.entries(pkg.dependencies).map(([n, v]) => `\`${n}@${v}\``).join('、')}`);
+    lines.push(`- Runtime dependencies: ${Object.entries(pkg.dependencies).map(([n, v]) => `\`${n}@${v}\``).join(', ')}`);
   }
   for (const n of extraNotes) lines.push(`- ${n}`);
   lines.push('');
   if (changes.breaking.length) {
-    lines.push('### 迁移说明 (Migration)', '');
-    lines.push('> 破坏性版本必须在这里写清「用户要改什么」。发布后在 GitHub Release 同步一份。', '');
+    lines.push('### Migration', '');
+    lines.push('> Every breaking release must state here what users have to change. Mirror this into the GitHub Release after publishing.', '');
     for (const c of changes.breaking) lines.push(`- ${c.subject}`);
     lines.push('');
   }
@@ -525,7 +528,7 @@ function writeChangelog(ctx, version, changes, { dryRun }) {
   const entry = renderEntry(ctx, version, date, changes);
 
   if (text.includes(`## [${version}]`)) {
-    warn(`CHANGELOG.md 已存在 [${version}] 段落，跳过写入`);
+    warn(`CHANGELOG.md already has the [${version}] section; skipping the write`);
     return false;
   }
   let next;
@@ -534,27 +537,27 @@ function writeChangelog(ctx, version, changes, { dryRun }) {
     const at = anchor.index + anchor[0].length;
     next = text.slice(0, at) + '\n' + entry + text.slice(at);
   } else {
-    // 插到第一个版本段之前，或文件末尾
+    // Insert before the first version section, or append at the end of the file
     const first = /^##\s*\[/m.exec(text);
     next = first ? text.slice(0, first.index) + entry + text.slice(first.index) : `${text.trimEnd()}\n\n${entry}`;
   }
   if (dryRun) {
-    info('将写入 CHANGELOG.md 的段落：');
+    info('Section that will be written to CHANGELOG.md:');
     dim(entry.split('\n').slice(0, 12).join('\n  '));
     return true;
   }
   writeFileSync(ctx.changelogPath, next);
-  ok(`CHANGELOG.md 已写入 [${version}]`);
+  ok(`Wrote [${version}] to CHANGELOG.md`);
   return true;
 }
 
 // ---------------------------------------------------------------------------
-// 7. 发布动作
+// 7. Release actions
 // ---------------------------------------------------------------------------
 
 function npmAuthEnv() {
-  // 凭据优先级：本机 <DSH_HOME>/dsh-npm.json 的 token（npm 自身未登录）。
-  // DSH_HOME 认 launcher / 救援胶囊搬迁过的 home，缺省才回落 ~/.dsh。
+  // Credential priority: this machine's token in <DSH_HOME>/dsh-npm.json (npm itself is not logged in).
+  // DSH_HOME honours a home relocated by the launcher / rescue capsule; only the default falls back to ~/.dsh.
   const dshHome = process.env.DSH_HOME || join(process.env.HOME || '', '.dsh');
   const dshNpm = join(dshHome, 'dsh-npm.json');
   const env = {};
@@ -578,34 +581,35 @@ function npmAuthEnv() {
 function doPublish(ctx, version, tag, { dryRun, env }) {
   const args = ['publish', '--tag', tag, '--access', 'public'];
   if (dryRun) {
-    // dry-run 不能真的调 `npm publish --dry-run`：此时 package.json 尚未 bump，
-    // 它会拿**旧版本号**去 registry 校验并报 "cannot publish over previously published versions"。
-    // 改用 `npm pack --dry-run` 验证分发物内容（不查 registry），再打印将要执行的命令。
-    info('npm pack --dry-run（验证分发物）');
+    // A dry run must not literally call `npm publish --dry-run`: package.json has not been bumped yet at this
+    // point, so it would validate the **old version** against the registry and complain "cannot publish over
+    // previously published versions". Use `npm pack --dry-run` to verify the package contents (no registry
+    // access), then print the command that would run.
+    info('npm pack --dry-run (verify the package contents)');
     const pack = trySh('npm', ['pack', '--dry-run', '--json'], { cwd: ctx.root, quiet: true });
     if (pack.code === 0) {
       try {
         const j = JSON.parse(pack.stdout)[0];
         dim(`tarball: ${j.filename} · ${j.entryCount} files · ${(j.size / 1024).toFixed(1)} kB`);
         for (const f of j.files.map((f) => f.path)) dim(`  ${f}`);
-      } catch { dim('（无法解析 pack 输出）'); }
+      } catch { dim('(cannot parse the pack output)'); }
     } else {
-      warn(`npm pack --dry-run 失败：${pack.stderr || pack.stdout}`);
+      warn(`npm pack --dry-run failed: ${pack.stderr || pack.stdout}`);
     }
-    info(`[dry-run] 将执行：npm ${args.join(' ')}`);
+    info(`[dry-run] would run: npm ${args.join(' ')}`);
     return { processing: false };
   }
   info(`npm ${args.join(' ')}`);
   const r = trySh('npm', args, { cwd: ctx.root, env, quiet: true });
   if (r.code !== 0) {
-    bad(`npm publish 失败（exit ${r.code}）`);
+    bad(`npm publish failed (exit ${r.code})`);
     dim(r.stderr || r.stdout);
-    die('npm publish 失败');
+    die('npm publish failed');
   }
-  // 202 = being processed：不是失败，但版本不会立刻可见
+  // 202 = being processed: not a failure, but the version is not visible immediately
   const processing = /202|being processed/i.test(r.stdout + r.stderr);
-  if (processing) warn('registry 返回 202「being processed」：版本需 2–3 分钟才可见，**不要**急着重发同版本（会 409）');
-  else ok(`npm publish 完成（tag=${tag}）`);
+  if (processing) warn('The registry returned 202 "being processed": the version becomes visible in 2–3 minutes; do NOT rush a republish of the same version (it would 409)');
+  else ok(`npm publish finished (tag=${tag})`);
   return { processing };
 }
 
@@ -614,20 +618,20 @@ function doGit(ctx, version, { dryRun, branch, remote, tag }) {
   const b = branch || git(ctx, ['rev-parse', '--abbrev-ref', 'HEAD']) || 'main';
 
   const existing = git(ctx, ['tag', '-l', tagName]);
-  if (existing) die(`git tag ${tagName} 已存在（重发请先确认该版本未发布过）`);
+  if (existing) die(`git tag ${tagName} already exists (before republishing, make sure that version was never published)`);
 
   if (!dryRun) {
     git(ctx, ['add', '-A']);
     trySh('git', ['commit', '-m', `chore(release): ${version}`], { cwd: ctx.root });
     git(ctx, ['tag', '-a', tagName, '-m', `Release ${version}`]);
-    ok(`已打 tag ${tagName}`);
+    ok(`Tagged ${tagName}`);
     const push = trySh('git', ['push', remote, b, '--follow-tags'], { cwd: ctx.root, quiet: true });
     if (push.code !== 0) {
-      warn(`git push 失败：${push.stderr}`);
-      warn(`可稍后手动：git push ${remote} ${b} --follow-tags`);
-    } else ok(`已 push ${remote}/${b} + tag ${tagName}`);
+      warn(`git push failed: ${push.stderr}`);
+      warn(`You can push manually later: git push ${remote} ${b} --follow-tags`);
+    } else ok(`Pushed ${remote}/${b} + tag ${tagName}`);
   } else {
-    info(`[dry-run] 将 commit / tag ${tagName} / push ${remote} ${b} --follow-tags`);
+    info(`[dry-run] would commit / tag ${tagName} / push ${remote} ${b} --follow-tags`);
   }
   return tagName;
 }
@@ -635,26 +639,26 @@ function doGit(ctx, version, { dryRun, branch, remote, tag }) {
 function doAggregates(ctx, version, { dryRun }) {
   const aggs = ctx.cfg.aggregates || [];
   if (aggs.length === 0) {
-    info('未配置聚合同步（release.config.json 的 aggregates 为空）');
+    info('No aggregate sync configured (aggregates is empty in release.config.json)');
     return [];
   }
   const results = [];
   for (const a of aggs) {
     if (!a.command) {
-      results.push({ name: a.name, status: 'skipped', note: a.note || '无需手动同步' });
-      dim(`${a.name}：跳过（${a.note || '自动扫描/无需手动同步'}）`);
+      results.push({ name: a.name, status: 'skipped', note: a.note || 'No manual sync needed' });
+      dim(`${a.name}: skipped (${a.note || 'auto-scanned / no manual sync needed'})`);
       continue;
     }
     const command = a.command.replaceAll('${VERSION}', version).replaceAll('${PKG}', ctx.pkg.name);
     if (dryRun) {
       results.push({ name: a.name, status: 'planned', command });
-      info(`[dry-run] 聚合同步 ${a.name}：${command}`);
+      info(`[dry-run] aggregate sync ${a.name}: ${command}`);
       continue;
     }
     const r = trySh('sh', ['-c', command], { cwd: ctx.root, quiet: true });
     results.push({ name: a.name, status: r.code === 0 ? 'ok' : 'failed', note: (r.stdout || r.stderr).slice(0, 400) });
-    if (r.code === 0) ok(`聚合同步 ${a.name} 完成`);
-    else warn(`聚合同步 ${a.name} 失败（不阻塞发布）：${(r.stderr || r.stdout).slice(0, 200)}`);
+    if (r.code === 0) ok(`Aggregate sync ${a.name} finished`);
+    else warn(`Aggregate sync ${a.name} failed (does not block the release): ${(r.stderr || r.stdout).slice(0, 200)}`);
   }
   return results;
 }
@@ -662,20 +666,20 @@ function doAggregates(ctx, version, { dryRun }) {
 function doDeprecate(ctx, { version, message }, { dryRun }) {
   const { env, cleanups } = npmAuthEnv();
   try {
-    if (!/^\d+\.\d+\.\d+/.test(version)) die(`--deprecate 的版本非法：${version}`);
+    if (!/^\d+\.\d+\.\d+/.test(version)) die(`Invalid --deprecate version: ${version}`);
     const args = ['deprecate', `${ctx.pkg.name}@${version}`, message];
     info(`npm ${args.join(' ')}`);
-    if (dryRun) { dim('[dry-run] 不执行'); return; }
+    if (dryRun) { dim('[dry-run] not executed'); return; }
     const r = trySh('npm', args, { cwd: ctx.root, env, quiet: true });
-    if (r.code !== 0) die(`npm deprecate 失败：${r.stderr || r.stdout}`);
-    ok(`已弃用 ${ctx.pkg.name}@${version}（版本仍可安装，只是安装时会看到警告）`);
+    if (r.code !== 0) die(`npm deprecate failed: ${r.stderr || r.stdout}`);
+    ok(`Deprecated ${ctx.pkg.name}@${version} (it can still be installed; a warning is shown on install)`);
   } finally {
     for (const d of cleanups) try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
 // ---------------------------------------------------------------------------
-// 8. 主流程
+// 8. Main flow
 // ---------------------------------------------------------------------------
 
 function main() {
@@ -697,21 +701,21 @@ function main() {
   }
 
   const current = ctx.pkg.version;
-  if (!parseSemver(current)) die(`package.json 的 version 非法：${current}`);
+  if (!parseSemver(current)) die(`Invalid package.json version: ${current}`);
 
-  // 上一次发布的 tag（用于限定提交范围与推档）
+  // The previous release tag (bounds the commit range and the bump)
   const lastTagRaw = git(ctx, ['describe', '--tags', '--abbrev=0', '--match', 'v*']);
   const lastTag = lastTagRaw || null;
   const commits = collectCommits(ctx, lastTag);
   const changes = classifyCommits(commits);
 
-  info(`当前版本 ${current}${lastTag ? `（上个 tag ${lastTag}）` : '（无历史 tag，按全量历史分析）'}`);
-  dim(`自上次发布共 ${commits.length} 个提交：breaking ${changes.breaking.length} / feat ${changes.feat.length} / fix ${changes.fix.length} / 其它 ${changes.other.length}`);
+  info(`Current version ${current}${lastTag ? ` (previous tag ${lastTag})` : ' (no tags yet; analysing the full history)'}`);
+  dim(`Commits since the last release: ${commits.length} — breaking ${changes.breaking.length} / feat ${changes.feat.length} / fix ${changes.fix.length} / other ${changes.other.length}`);
 
   const req = requiredBump(current, changes);
-  info(`纪律要求的最低档位：${req}${changes.breaking.length ? '（检测到破坏性变更）' : ''}`);
+  info(`Minimum level required by the discipline: ${req}${changes.breaking.length ? ' (breaking changes detected)' : ''}`);
 
-  // 解析目标版本
+  // Resolve the target version
   let target = o.version;
   if (!target) {
     const bump = o.bump || 'auto';
@@ -720,21 +724,21 @@ function main() {
     else if (['patch', 'minor', 'major'].includes(bump)) {
       if (RANK[bump] < RANK[req]) {
         die([
-          `--bump ${bump} 违反版本纪律：检测到${changes.breaking.length ? '破坏性变更' : changes.feat.length ? '新功能' : '变更'}，最低要求 ${req}。`,
+          `--bump ${bump} violates the version discipline: detected ${changes.breaking.length ? 'breaking changes' : changes.feat.length ? 'new features' : 'changes'}, at least ${req} is required.`,
           changes.breaking.length
-            ? `  铁律：patch 只装修复，绝不装 breaking（否则所有 ^${current} 用户自动升到坏版本）。`
+            ? `  Rule: a patch release only carries fixes, never breaking changes (otherwise every ^${current} user upgrades to a broken version).`
             : '',
         ].filter(Boolean).join('\n'));
       }
       kind = bump;
-    } else die(`--bump 只接受 auto|patch|minor|major，收到 ${bump}`);
+    } else die(`--bump accepts only auto|patch|minor|major, got ${bump}`);
     target = incSemver(current, kind);
   }
 
   if (o.pre) {
     const base = target.split('-')[0];                 // 0.3.0
     if (!/^(rc|beta|alpha|next)$/i.test(o.pre)) {
-      // 允许自定义预发布标识：--pre canary.1
+      // Allow a custom prerelease identifier: --pre canary.1
       target = `${base}-${o.pre}`;
     } else {
       const label = o.pre.toLowerCase() === 'next' ? 'rc' : o.pre.toLowerCase();
@@ -742,41 +746,41 @@ function main() {
     }
   }
 
-  // 纪律校验（含 patch 不得含 breaking）
+  // Discipline check (including "a patch must not contain a breaking change")
   const discipline = assertDiscipline(current, target, changes);
-  ok(`版本推档合规：${current} → ${target}（档位 ${discipline.level}，纪律要求 ${discipline.required}）`);
+  ok(`Version bump is compliant: ${current} → ${target} (level ${discipline.level}, discipline requires ${discipline.required})`);
 
-  // dist-tag 分档
+  // dist-tag selection
   const isPre = parseSemver(target).prerelease.length > 0;
   let tag = o.tag;
   if (!tag) {
-    if (o.line) tag = o.line.replace(/\./g, '-');        // 0.1 → 0-1（维护线分档）
+    if (o.line) tag = o.line.replace(/\./g, '-');        // 0.1 → 0-1 (maintenance-line dist-tag)
     else if (isPre) tag = 'next';                        // rc/beta → next
-    else tag = 'latest';                                 // 稳定线 → latest
+    else tag = 'latest';                                 // stable → latest
   }
-  info(`dist-tag：${tag}${o.line ? `（维护线 ${o.line}）` : ''}`);
+  info(`dist-tag: ${tag}${o.line ? ` (maintenance line ${o.line})` : ''}`);
 
-  // 目标版本不得已存在
+  // The target version must not exist yet
   if (!o.skipNpm) {
     const exists = trySh('npm', ['view', `${ctx.pkg.name}@${target}`, 'version'], { quiet: true });
-    if (exists.code === 0 && exists.stdout) die(`${ctx.pkg.name}@${target} 已存在于 registry，不能重复发布（要覆盖只能 force，属高危操作，本脚本不提供）`);
-    else ok(`registry 中 ${ctx.pkg.name}@${target} 尚不存在`);
+    if (exists.code === 0 && exists.stdout) die(`${ctx.pkg.name}@${target} already exists in the registry; republishing is not allowed (overwriting needs force, a high-risk operation this script does not offer)`);
+    else ok(`${ctx.pkg.name}@${target} is not in the registry yet`);
   }
 
   const dryRun = !o.publish;
   if (dryRun) {
-    warn('DRY-RUN：不会写 registry / 不会 commit / 不会 push。加 --publish 才真发。');
+    warn('DRY-RUN: no registry write / no commit / no push. Add --publish to release for real.');
   } else if (!o.yes) {
-    die('真发布需要同时加 --publish --yes（避免误触）');
+    die('A real release needs both --publish and --yes (to avoid accidents)');
   }
 
   runChecks(ctx, { strict: true, allowDirty: o.allowDirty });
 
-  // 1) 写 CHANGELOG（先写，让 commit 里带上）
-  const extraNotes = o.line ? [`维护线发布（release/${o.line}）：仅修 bug / 安全问题的 cherry-pick`] : [];
+  // 1) Write the CHANGELOG (first, so the commit includes it)
+  const extraNotes = o.line ? [`Maintenance release (release/${o.line}): cherry-picked bug / security fixes only`] : [];
   if (!o.skipChangelog) writeChangelog(ctx, target, changes, { dryRun });
 
-  // 2) bump package.json version
+  // 2) Bump the package.json version
   if (!dryRun) {
     const pkgRaw = readFileSync(ctx.pkgPath, 'utf8');
     const bumped = pkgRaw.replace(/("version"\s*:\s*")[^"]+(")/, `$1${target}$2`);
@@ -786,15 +790,15 @@ function main() {
     info(`[dry-run] package.json version → ${target}`);
   }
 
-  // 3) 构建（有 build 脚本才跑）
+  // 3) Build (only when there is a build script)
   const buildCmd = ctx.cfg.build ?? (ctx.pkg.scripts?.build ? 'npm run build' : null);
   if (buildCmd && !/^none$/i.test(buildCmd)) {
-    if (dryRun) info(`[dry-run] 构建：${buildCmd}`);
+    if (dryRun) info(`[dry-run] build: ${buildCmd}`);
     else {
-      info(`构建：${buildCmd}`);
+      info(`Build: ${buildCmd}`);
       const r = trySh('sh', ['-c', buildCmd], { cwd: ctx.root, quiet: true });
-      if (r.code !== 0) { dim(r.stdout || r.stderr); die('构建失败，发布中止'); }
-      ok('构建通过');
+      if (r.code !== 0) { dim(r.stdout || r.stderr); die('Build failed; release aborted'); }
+      ok('Build passed');
     }
   }
 
@@ -828,11 +832,11 @@ function main() {
   if (o.json) log(JSON.stringify(result, null, 2));
   else {
     log('');
-    ok(`${dryRun ? '[DRY-RUN] 计划' : '发布'}完成：${ctx.pkg.name}@${target}（tag=${tag}）`);
-    dim(`用户安装：dsh plugin --profile web add ${ctx.pkg.name}@${target}`);
-    if (isPre) dim(`预发布分档：npm i ${ctx.pkg.name}@next`);
-    if (o.line) dim(`维护线分档：npm i ${ctx.pkg.name}@${tag}`);
-    if (!dryRun) dim('别忘了：GitHub Release 写迁移说明（破坏性版本必填）、回填 Obsidian、同步聚合平台');
+    ok(`${dryRun ? '[DRY-RUN] planned' : 'Release'} complete: ${ctx.pkg.name}@${target} (tag=${tag})`);
+    dim(`Users install with: dsh plugin --profile web add ${ctx.pkg.name}@${target}`);
+    if (isPre) dim(`Prerelease dist-tag: npm i ${ctx.pkg.name}@next`);
+    if (o.line) dim(`Maintenance dist-tag: npm i ${ctx.pkg.name}@${tag}`);
+    if (!dryRun) dim('Do not forget: write the migration notes in the GitHub Release (required for breaking releases), backfill Obsidian, sync the aggregate platforms');
   }
   return 0;
 }
@@ -844,6 +848,6 @@ try {
     bad(e.message);
     process.exit(1);
   }
-  bad(`未预期错误：${e?.stack || e}`);
+  bad(`Unexpected error: ${e?.stack || e}`);
   process.exit(1);
 }

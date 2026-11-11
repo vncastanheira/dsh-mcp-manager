@@ -151,7 +151,7 @@ test('a rejected definition never reaches the bridge', async () => {
   try {
     const bad = await h.manager.addServer({ name: 'bad name', command: 'node' })
     assert.equal(bad.ok, false)
-    assert.match(bad.message, /只能/)
+    assert.match(bad.message, /may only contain/)
     assert.deepEqual(h.ctx.loaded, [])
     assert.deepEqual(h.manager.snapshot().servers, [])
   } finally {
@@ -205,7 +205,7 @@ test('import reports every location it tried when none exists', async () => {
   try {
     const result = await h.manager.importFrom()
     assert.equal(result.ok, false)
-    assert.match(result.message, /没有找到可导入的文件/)
+    assert.match(result.message, /No importable file found/)
     // The replaced package's real layout must be among the candidates.
     assert.match(result.message, /@wingsky-1/)
   } finally {

@@ -1,69 +1,83 @@
 # Changelog
 
-本文件记录 `@zhengjunyao/dsh-mcp-manager` 的每个发布版本。
-格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
+This file records every release of `@zhengjunyao/dsh-mcp-manager`.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Translated all user-facing strings, tool descriptions, comments and documentation from Chinese to English. `README.zh.md` stays as the Chinese edition and now describes the English UI labels.
+
 ## [0.1.2] - 2026-09-29
 
-### 兼容性
+### Compatibility
 
-- 声明兼容 **DSH 0.2.0-rc.2**：`peerDependencies` 中官方 DSH 包的版本范围追加 `^0.2.0-rc.2`。功能与行为无变化，仅解除新版 DSH 下的兼容告警。
+- Declares compatibility with **DSH 0.2.0-rc.2**: `^0.2.0-rc.2` was appended to the version range of the official DSH packages in `peerDependencies`. No functional or behavioural change; it only removes the compatibility warning on newer DSH versions.
 
 
 ## [0.1.1] - 2026-09-27
 
-### 其它 (Changed)
+### Changed
 
 - docs(readme): correct the restart claim and add guided setup steps
 
-### 兼容性 (Compatibility)
+### Compatibility
 
-- DSH：`>=0.1.5-rc.1`
-- Node：`^22.19.0 || >=24.0.0`
-- DSH peer：^0.1.0-rc.6 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || ^0.1.5-rc.2 || ^0.1.5-rc.3 || ^0.1.7-rc.1 || ^0.1.7-rc.2
+- DSH: `>=0.1.5-rc.1`
+- Node: `^22.19.0 || >=24.0.0`
+- DSH peer: ^0.1.0-rc.6 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || ^0.1.5-rc.2 || ^0.1.5-rc.3 || ^0.1.7-rc.1 || ^0.1.7-rc.2
 
 ## [0.1.0] - 2026-09-27
 
-首个版本。自建于 `@wingsky-1/dsh-mcp-manager` 被卸载之后（它用核心 `tools.restrict()` 逐个工具名调和
-可见性，每次调用都重算整个 registry view，把 web 宿主压到 CPU 94.7% / 端口 8 秒无响应 / JS 堆 1080 MB）。
+First release. Built after `@wingsky-1/dsh-mcp-manager` was uninstalled (it reconciled tool visibility
+per tool name through the core `tools.restrict()`, and every call recomputed the whole registry view,
+pushing the web host to 94.7% CPU / an unresponsive port for 8 seconds / a 1080 MB JS heap).
 
-### 能力
+### Capabilities
 
-- **运行时增删启停 MCP 服务器**，不需要重启 DSH。stdio（`command`/`args`/`env`/`cwd`）与
-  Streamable HTTP（`url`/`headers`）两种传输。
-- **Web 设置页「MCP 管理」面板**：实时阶段、工具数与工具名、测试连接（草稿不落盘）、
-  启停、编辑、删除、从旧管理插件导入、重新读取配置。
-- **8 个 agent 工具**：`mcp_manager_status` / `list` / `add` / `update` / `remove` / `test` / `import` / `reload`。
-  删除是两步的：不传 `confirm` 只预检。
-- **配置在 `$DSH_HOME/dsh-mcp-manager.json`**（0600，认 `DSH_HOME`，原子写入）。
-  磁盘形态与旧管理插件的 `mcp-manager-mcp.json` 兼容，可直接导入。
-- **两个独立开关**：安装开关（profile 组装行）与运行开关（配置文件 / 面板），语义在 README 里写明。
+- **Add, remove, enable and disable MCP servers at runtime**, with no DSH restart. Two transports:
+  stdio (`command`/`args`/`env`/`cwd`) and Streamable HTTP (`url`/`headers`).
+- **Web settings "MCP Manager" panel**: live phase, tool count and tool names, test connection
+  (draft not persisted), enable/disable, edit, remove, import from the old manager plugin, reload config.
+- **8 agent tools**: `mcp_manager_status` / `list` / `add` / `update` / `remove` / `test` / `import` / `reload`.
+  Removal is two-step: without `confirm` it only previews.
+- **Config in `$DSH_HOME/dsh-mcp-manager.json`** (0600, honours `DSH_HOME`, atomic writes).
+  The on-disk shape is compatible with the old manager plugin's `mcp-manager-mcp.json`, so it can be
+  imported directly.
+- **Two independent switches**: the installation switch (profile composition row) and the runtime
+  switch (config file / panel); their semantics are documented in the README.
 
-### 架构
+### Architecture
 
-- **不自己实现 MCP**，而是用 `ctx.plugin()` 动态挂载 harness 自带的 `@deepseek-ai/dsh-mcp-client`，
-  一个启用的服务器一个实例，`fiber.dispose()` 即断开。传输、凭据清洗、重连退避、资源发布、
-  命名契约全部复用核心实现。
-- **完全不调用 `tools.restrict()`**。唯一的注册表读操作是「一次观测读一次 `ctx.tools.schemas()`，
-  内存里按前缀分组」，代价线性。
-- **桥的解析走阶梯**：优先运行中 harness 自己那份（从 CLI 入口 realpath 解析），
-  其次 profile 链接farm，最后才退回插件自己的依赖树；`/probe` 会报出用的是哪一档。
-- 所有宿主半入口都包了异常：MCP 服务器连不上、桥缺失，都不会让 web boot 失败。
+- **Does not implement MCP itself**; it mounts the harness's own `@deepseek-ai/dsh-mcp-client`
+  dynamically with `ctx.plugin()`, one instance per enabled server, and `fiber.dispose()` disconnects.
+  Transport, credential scrubbing, reconnect backoff, resource publishing and the naming contract
+  all reuse the core implementation.
+- **Never calls `tools.restrict()`**. The only registry read is "one `ctx.tools.schemas()` per
+  observation, grouped by prefix in memory", so the cost is linear.
+- **Bridge resolution is a ladder**: first the running harness's own copy (resolved by realpath from
+  the CLI entry), then the profile's link farm, and only then the plugin's own dependency tree;
+  `/probe` reports which rung was used.
+- Every host-half entry point is exception-guarded: an unreachable MCP server or a missing bridge
+  never fails the web boot.
 
-### 修复（开发过程中被端到端验证抓到）
+### Fixes (caught by end-to-end verification during development)
 
-- **「停用插件」开关曾经是假的**：面板写的是配置文件里的 `enabled`，而运行时读的是组装行的
-  `enabled`，于是拨动开关没有任何效果、所有服务器照旧连着。现在两个开关各自独立且都生效，
-  并且有 11 项专门的回归测试（`tests/manager.mjs`）钉住语义。
-- **`snapshot()` 曾按「状态文件读过没有」短路成「全部 stopped」**，使任何没调用过
-  `initialize()` 的调用者（包括慢启动时的面板）看到一台死掉的机器。改为始终据实计算。
+- **The "disable plugin" switch used to be fake**: the panel wrote the config file's `enabled`, while
+  the runtime read the composition row's `enabled`, so flipping the switch had no effect and every
+  server stayed connected. The two switches are now independent and both effective, pinned by
+  11 dedicated regression tests (`tests/manager.mjs`).
+- **`snapshot()` used to short-circuit to "everything stopped" based on "has the state file been
+  read yet"**, making any caller that had not called `initialize()` (including the panel during a
+  slow boot) see a dead machine. It now always computes the live state.
 
-### 验证
+### Verification
 
-- `npm test`：54 项单元测试（定义模型 / 持久化与 0600 / 运行时分组与阶段 / 两个开关语义 /
-  桥解析阶梯 / 回环路由与守卫）。
-- `npm run verify:live`：真实隔离实例端到端——配置 → 桥 → 真 stdio MCP 服务器（零依赖手写 fixture）
-  → `mcp__echo__*` 工具；再走 HTTP 新增 / 停用（工具立刻注销）/ 删除 / 草稿试连 / 总开关，全程无需重启。
-- `npm run verify:full`：可移植性门禁（隔离 `DSH_HOME` + tarball 安装 + 健康路由 + 客户端 bundle）。
+- `npm test`: 54 unit tests (definition model / persistence and 0600 / runtime grouping and phases /
+  two-switch semantics / bridge resolution ladder / loopback routes and guards).
+- `npm run verify:live`: live isolated instance end to end — config → bridge → real stdio MCP server
+  (a zero-dependency hand-written fixture) → `mcp__echo__*` tools; then HTTP add / disable (tools
+  unregistered immediately) / remove / draft probe / master switch, all without a restart.
+- `npm run verify:full`: portability gate (isolated `DSH_HOME` + tarball install + health route +
+  client bundle).

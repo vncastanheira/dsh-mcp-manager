@@ -40,14 +40,14 @@ Two transports: **stdio** (a local child process: `command` / `args` / `env` / `
    Expected: the command ends with a line reading `+ @zhengjunyao/dsh-mcp-manager`, and the profile's
    dependencies and load list both contain it.
 
-2. **Open the “MCP 管理” card** — refresh the Web GUI, open **Settings** in the left sidebar, and find
-   the **MCP 管理** card.
+2. **Open the “MCP Manager” card** — refresh the Web GUI, open **Settings** in the left sidebar, and find
+   the **MCP Manager** card.
 
    Expected: the card shows a master switch, the server list, and a phase badge per server
    (`active` / `starting` / `waiting` / `error` / `stopped`).
 
-> 📷 **【Screenshot 2】Starting point: where the “MCP 管理” card lives and what it looks like**
-> How to capture: refresh the Web GUI → Settings in the left sidebar → scroll to the “MCP 管理” card → stop with the whole card visible (title + master switch + server list in one frame)
+> 📷 **【Screenshot 2】Starting point: where the “MCP Manager” card lives and what it looks like**
+> How to capture: refresh the Web GUI → Settings in the left sidebar → scroll to the “MCP Manager” card → stop with the whole card visible (title + master switch + server list in one frame)
 > Redaction: if servers already exist, **blur server names and any local paths in commands**
 > Replace: swap this whole block for `![MCP manager settings card](image-url)`
 
@@ -86,8 +86,8 @@ Two transports: **stdio** (a local child process: `command` / `args` / `env` / `
 
 ## Usage
 
-Web GUI → Settings → **MCP 管理** (MCP manager). The card shows each server's live phase
-(`● connected` / `◌ no tools` / `✖ failed` / `○ not loaded`), its tool count and its tool names,
+Web GUI → Settings → **MCP Manager**. The card shows each server's live phase
+(`● Connected` / `◌ No tools` / `✖ Failed` / `○ Not loaded`), its tool count and its tool names,
 and offers a **test** button that really connects — a draft is tried and thrown away, so a typo is
 caught before it is saved.
 

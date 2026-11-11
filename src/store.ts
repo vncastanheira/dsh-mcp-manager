@@ -195,7 +195,7 @@ export function importServers(raw: unknown): { accepted: ServerEntry[]; skipped:
   for (const item of list) {
     const server = normalizeServer(item)
     if (server === undefined || server.name === '') {
-      skipped.push('(未命名条目)')
+      skipped.push('(unnamed entry)')
       continue
     }
     accepted.push(server)

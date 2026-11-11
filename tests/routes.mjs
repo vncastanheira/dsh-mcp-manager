@@ -195,7 +195,7 @@ test('an invalid definition is rejected with the host message, not a 500', async
     }))
     assert.equal(result.status, 400)
     assert.equal(result.body.ok, false)
-    assert.match(result.body.message, /只能/)
+    assert.match(result.body.message, /may only contain/)
   } finally {
     cleanup()
   }
@@ -206,7 +206,7 @@ test('the import route reports the locations it tried when nothing was found', a
   try {
     const result = await call(routeOf(routes, MANAGER_API.import), fakeRequest({ method: 'POST', body: {} }))
     assert.equal(result.status, 400)
-    assert.match(result.body.message, /没有找到可导入的文件/)
+    assert.match(result.body.message, /No importable file found/)
   } finally {
     cleanup()
   }

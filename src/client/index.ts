@@ -1,7 +1,7 @@
 /**
  * dsh-mcp-manager — browser half.
  *
- * Registers one surface: the 「MCP 管理」 card on the web settings page
+ * Registers one surface: the "MCP Manager" card on the web settings page
  * (settings.section entry), which lists every configured MCP server with its
  * live state and drives add / edit / enable / test / remove over the loopback
  * route family.
@@ -32,7 +32,7 @@ export function apply(ctx: ClientContext): void {
         name: 'settings.section',
         id: 'mcp-manager',
         order: 341,
-        label: () => 'MCP 管理',
+        label: () => 'MCP Manager',
       },
       McpManagerPanel,
     ))

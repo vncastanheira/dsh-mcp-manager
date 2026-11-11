@@ -44,7 +44,7 @@
     "mcp-server",
     "stdio",
     "streamable-http",
-    "MCP管理"
+    "mcp-management"
   ],
   "license": "MIT",
   "repository": {

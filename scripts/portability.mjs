@@ -1,32 +1,33 @@
 #!/usr/bin/env node
 /**
- * dsh-release-kit / portability.mjs — 把「能不能移植到别人的电脑」变成脚本门禁。
+ * dsh-release-kit / portability.mjs — turns "can this be moved to someone else's computer" into a scripted gate.
  *
- * 本地开发时，`link:` 挂载 + 你自己的 profile + 你自己的 `~/.dsh` 会掩盖一堆问题：
- * 绝对路径、写死 `~/.dsh`、只在 macOS 成立的假设、包里漏发包内文件、客户端半根本没被
- * shell 收进 boot payload……这些只在别人机器上炸，而且常常是「装上了但什么都没发生」。
+ * During local development, `link:` mounting + your own profile + your own `~/.dsh` hide a pile of problems:
+ * absolute paths, a hardcoded `~/.dsh`, assumptions that only hold on macOS, package files missed by the
+ * tarball, a client half the shell never puts into the boot payload… these only break on someone else's
+ * machine, and often look like "installed, but nothing happened".
  *
- * 本脚本用「别人电脑」的方式验证一遍：
+ * This script verifies the plugin the way "someone else's computer" would:
  *
- *   1. 静态体检   —— 源码里的本机绝对路径 / 裸用的平台专有命令 / 不认 DSH_HOME 的家目录
- *   2. 打包       —— npm pack，并核对声明过的入口真的进了包
- *   3. 干净安装   —— 新建空 profile，用 tarball 安装（不走 link:）
- *   4. 启动       —— 空闲端口跑起来
- *   5. 宿主半验证 —— 打健康路由，确认插件真的挂载
- *   6. 客户端半验证 —— 确认 bundle 进了 __DSH_BOOT__.entries 且能取到
- *   7. 真实动作   —— 可选：POST 真实重启，确认服务带着新 pid 回来
- *   8. 清理       —— 停实例、删 profile、删 tarball（--keep 保留）
+ *   1. static audit   — local absolute paths / bare platform-specific commands / home dirs that ignore DSH_HOME
+ *   2. pack           — npm pack, and check the declared entries really made it into the package
+ *   3. clean install  — create an empty profile and install from the tarball (no link:)
+ *   4. boot           — start on a free port
+ *   5. host half      — hit the health route and confirm the plugin really mounted
+ *   6. client half    — confirm the bundle is in __DSH_BOOT__.entries and can be fetched
+ *   7. real action    — optional: POST a real restart and confirm the service returns with a new pid
+ *   8. cleanup        — stop the instance, delete the profile and the tarball (--keep retains them)
  *
- * 零依赖，Node ≥ 20（用内置 fetch / getSetCookie）。
+ * Zero dependencies, Node >= 20 (uses the built-in fetch / getSetCookie).
  *
  *   node scripts/portability.mjs
  *   node scripts/portability.mjs --health /api/foo/probe --restart-route /api/foo/restart
- *   node scripts/portability.mjs --no-isolate   # 共享本机 ~/.dsh（默认是隔离的临时 home）
- *   node scripts/portability.mjs --json         # 机器可读报告
- *   node scripts/portability.mjs --stability 30 # 就绪后多守一会儿（默认 15 秒）
- *   node scripts/portability.mjs --cwd <插件目录>
+ *   node scripts/portability.mjs --no-isolate   # share this machine's ~/.dsh (the default is an isolated temp home)
+ *   node scripts/portability.mjs --json         # machine-readable report
+ *   node scripts/portability.mjs --stability 30 # keep watching longer after readiness (default 15 s)
+ *   node scripts/portability.mjs --cwd <plugin directory>
  *
- * 退出码：0 = 通过（可以发布），1 = 未通过，2 = 用法/环境错误。
+ * Exit code: 0 = passed (publishable), 1 = failed, 2 = usage / environment error.
  */
 
 import { execFileSync, spawn } from 'node:child_process'
@@ -36,7 +37,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 
-/* ------------------------------------------------------------------ 参数 */
+/* ------------------------------------------------------------------ Arguments */
 
 const argv = process.argv.slice(2)
 const flag = (name, fallback = undefined) => {
@@ -55,16 +56,17 @@ const options = {
   port: Number(flag('--port', '0')) || 0,
   bootTimeoutSec: Number(flag('--timeout', '90')) || 90,
   keep: has('--keep'),
-  // 默认隔离：同机第二个实例会抢 `~/.dsh/.credentials.yaml` 的写锁并启动失败，
-  // 而且用开发者的 home 会掩盖「全新机器」的问题。--no-isolate 才共享 home。
+  // Isolated by default: a second instance on the same machine would contend for the `~/.dsh/.credentials.yaml`
+  // write lock and fail to boot, and using the developer's home hides "brand-new machine" problems.
+  // Only --no-isolate shares the home.
   isolate: !has('--no-isolate'),
   json: has('--json'),
   skipAudit: has('--skip-audit'),
-  /** 就绪后不再做稳定性观察（默认做）。 */
+  /** Skip the post-readiness stability watch (it runs by default). */
   skipStability: has('--skip-stability'),
 }
 
-/* ------------------------------------------------------------------ 输出 */
+/* ------------------------------------------------------------------ Output */
 
 const results = []
 let failed = 0
@@ -88,11 +90,11 @@ const section = (title) => {
   if (!options.json) console.log(`\n${title}`)
 }
 
-/* ------------------------------------------------------------------ 小工具 */
+/* ------------------------------------------------------------------ Helpers */
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** 弹一个空闲端口。 */
+/** Pick a free TCP port. */
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer()
@@ -104,7 +106,7 @@ function freePort() {
   })
 }
 
-/** 该端口上有人应答吗。 */
+/** Whether something answers on that port. */
 function probePort(port, host = '127.0.0.1', timeoutMs = 800) {
   return new Promise((resolve) => {
     const socket = net.connect({ port, host })
@@ -122,7 +124,7 @@ function probePort(port, host = '127.0.0.1', timeoutMs = 800) {
   })
 }
 
-/** 同步跑一条命令，失败不抛。 */
+/** Run one command synchronously; a failure is returned, not thrown. */
 function run(file, args, runOptions = {}) {
   try {
     const stdout = execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...runOptions })
@@ -132,7 +134,7 @@ function run(file, args, runOptions = {}) {
   }
 }
 
-/** 递归列出源码文件（跳过 node_modules / .git / lib 产物）。 */
+/** Recursively list source files (skipping node_modules / .git / lib output). */
 function listSources(dir, out = []) {
   if (!existsSync(dir)) return out
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -144,7 +146,7 @@ function listSources(dir, out = []) {
   return out
 }
 
-/* ---------------------------------------------------------- 1. 静态体检 */
+/* ---------------------------------------------------------- 1. Static audit */
 
 const USER_PATH = /(\/(?:Users|home)\/[A-Za-z0-9._-]+|C:\\Users\\[A-Za-z0-9._-]+)/
 const PLATFORM_ONLY = /\b(launchctl|plutil|launchd)\b/
@@ -155,7 +157,7 @@ const DOT_DSH = /\.dsh(?![\w-])/
 function auditSources(cwd) {
   const files = ['src', 'helper', 'bin', 'scripts']
     .flatMap((dir) => listSources(path.join(cwd, dir)))
-    // 浏览器半不会 shell out、也不会解析 home：扫它只会造成假阳性
+    // The browser half never shells out or resolves the home dir: scanning it would only create false positives
     .filter((file) => !file.endsWith('.min.js') && !file.includes(`${path.sep}client${path.sep}`))
   const hits = { absolute: [], platform: [], home: [] }
   for (const file of files) {
@@ -163,15 +165,16 @@ function auditSources(cwd) {
     const relative = path.relative(cwd, file)
     text.split('\n').forEach((line, index) => {
       const trimmed = line.trim()
-      if (trimmed.startsWith('*') || trimmed.startsWith('//')) return // 注释不算
+      if (trimmed.startsWith('*') || trimmed.startsWith('//')) return // comments do not count
       const absolute = USER_PATH.exec(line)
       if (absolute !== null) hits.absolute.push(`${relative}:${index + 1} → ${absolute[1]}`)
       if (PLATFORM_ONLY.test(line) && !PLATFORM_GUARD.test(text)) {
         hits.platform.push(`${relative}:${index + 1}`)
       }
     })
-    // 写 ~/.dsh 却不认 DSH_HOME：搬迁过 home 的机器会写到错的地方。
-    // 只看非注释行，且 `.dsh` 后面不能紧跟词字符（否则 .dshwx-ball 之类会误报）。
+    // Writes ~/.dsh without honouring DSH_HOME: a relocated home would be written to the wrong place.
+    // Only non-comment lines are considered, and `.dsh` must not be followed by a word character
+    // (otherwise something like .dshwx-ball would be reported falsely).
     const homeHit = text
       .split('\n')
       .some((line) => {
@@ -184,11 +187,11 @@ function auditSources(cwd) {
   return { count: files.length, hits }
 }
 
-/* ------------------------------------------------------------------ 入口 */
+/* ------------------------------------------------------------------ Entry point */
 
 const pkgPath = path.join(options.cwd, 'package.json')
 if (!existsSync(pkgPath)) {
-  console.error(`找不到 package.json：${pkgPath}（用 --cwd <插件目录> 指定）`)
+  console.error(`Cannot find package.json: ${pkgPath} (use --cwd <plugin directory>)`)
   process.exit(2)
 }
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
@@ -197,39 +200,39 @@ const hasClient = pkg.dsh?.client !== undefined
 const bundlePatch = pkg.dsh?.bundle?.patch
 
 if (!options.json) {
-  console.log(`\n可移植性验证：${id}@${pkg.version ?? '?'}`)
-  console.log(`  目录：${options.cwd}`)
-  console.log(`  客户端半：${hasClient ? '有' : '无'}　bundle patch：${bundlePatch ?? '无'}`)
+  console.log(`\nPortability check: ${id}@${pkg.version ?? '?'}`)
+  console.log(`  Directory: ${options.cwd}`)
+  console.log(`  Client half: ${hasClient ? 'yes' : 'no'}   bundle patch: ${bundlePatch ?? 'none'}`)
 }
 
 let tarball
 let isolatedHome = ''
 let child
 let port = 0
-/** 验证用 profile 名（先声明：cleanup/finish 可能在它赋值前就被调用）。 */
+/** Name of the verification profile (declared early: cleanup/finish may run before it is assigned). */
 let profile = ''
 const dshEnv = { ...process.env }
 
-/** 收尾：停验证实例、删 profile、删 tarball。 */
+/** Clean up: stop the verification instance, delete the profile and the tarball. */
 function cleanup() {
   try {
     if (child !== undefined && child.exitCode === null) child.kill('SIGKILL')
     try {
       closeSync(bootLogFd)
     } catch {
-      /* 已关闭 */
+      /* already closed */
     }
   } catch {
-    /* 已经退了 */
+    /* already exited */
   }
-  // 真实动作（重启）之后，监听端口的是助手拉起的新进程，与 child 无关。
+  // After the real action (restart), the port is held by the new process the helper started, unrelated to child.
   if (port !== 0) {
     const found = run('/usr/sbin/lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'])
     for (const pid of found.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
       try {
         process.kill(Number(pid), 'SIGKILL')
       } catch {
-        /* 已经退了 */
+        /* already exited */
       }
     }
   }
@@ -239,7 +242,7 @@ function cleanup() {
     try {
       rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 })
     } catch {
-      /* 文件系统还在回收，留给系统清理临时目录 */
+      /* the filesystem is still reclaiming; leave the temp directory to the OS */
     }
   }
   rm(path.join(dshHome(), 'profiles', profile))
@@ -257,46 +260,46 @@ function finish() {
   if (options.json) {
     console.log(JSON.stringify({ id, version: pkg.version ?? null, port, failed, tarball: tarball ?? null, results }, null, 2))
   } else {
-    section('结论')
+    section('Conclusion')
     if (failed === 0) {
-      console.log(`\n  ✅ 通过：${id}@${pkg.version ?? '?'} 已按「别人的电脑」方式验证，可以发布\n`)
+      console.log(`\n  ✅ Passed: ${id}@${pkg.version ?? '?'} verified the "someone else's computer" way; ready to publish\n`)
     } else {
-      console.error(`\n  ❌ 未通过：${failed} 项失败 —— 修完再发布\n`)
+      console.error(`\n  ❌ Failed: ${failed} checks failed — fix them before publishing\n`)
     }
-    if (options.keep) console.log('  （--keep：已保留验证 profile 与 tarball 供排查）\n')
-    if (isolatedHome !== '' && !options.keep) console.log('  （验证跑在临时 DSH_HOME 里，已删除；用 --keep 可保留）\n')
+    if (options.keep) console.log('  (--keep: kept the verification profile and tarball for debugging)\n')
+    if (isolatedHome !== '' && !options.keep) console.log('  (verification ran in a temporary DSH_HOME, now deleted; use --keep to keep it)\n')
   }
   process.exit(failed === 0 ? 0 : 1)
 }
 
-/* ----------------------------------------------------------- 1. 静态体检 */
+/* ----------------------------------------------------------- 1. Static audit */
 
 if (!options.skipAudit) {
-  section('1. 静态体检')
+  section('1. Static audit')
   const audit = auditSources(options.cwd)
-  info(`扫描 ${audit.count} 个源文件`)
-  if (audit.hits.absolute.length === 0) pass('没有本机绝对路径')
-  else fail('源码里有本机绝对路径（别人装上必坏）', audit.hits.absolute.slice(0, 5).join('；'))
-  if (audit.hits.platform.length === 0) pass('没有裸用的平台专有命令')
-  else warn('平台专有命令疑似未加平台守卫', audit.hits.platform.slice(0, 4).join('，'))
-  if (audit.hits.home.length === 0) pass('配置目录按约定解析（认 DSH_HOME）')
-  else warn('写 .dsh 但不认 DSH_HOME（搬迁过 home 的机器会写错家）', audit.hits.home.slice(0, 4).join('，'))
+  info(`Scanned ${audit.count} source files`)
+  if (audit.hits.absolute.length === 0) pass('No local absolute paths')
+  else fail('Local absolute paths in the source (they always break on someone else\'s machine)', audit.hits.absolute.slice(0, 5).join('; '))
+  if (audit.hits.platform.length === 0) pass('No bare platform-specific commands')
+  else warn('Platform-specific commands may lack a platform guard', audit.hits.platform.slice(0, 4).join(', '))
+  if (audit.hits.home.length === 0) pass('Config locations resolved by convention (DSH_HOME aware)')
+  else warn('Writes .dsh without honouring DSH_HOME (a relocated home would be written to the wrong place)', audit.hits.home.slice(0, 4).join(', '))
 }
 
-/* --------------------------------------------------------------- 2. 打包 */
+/* --------------------------------------------------------------- 2. Pack */
 
-section('2. 打包')
-// --ignore-scripts：`prepare` 会把构建日志打进 stdout，污染 --json 输出（构建由调用方自己负责）
+section('2. Pack')
+// --ignore-scripts: `prepare` would write build logs to stdout and pollute the --json output (the caller is responsible for building)
 const pack = run('npm', ['pack', '--json', '--ignore-scripts'], { cwd: options.cwd })
 if (!pack.ok) {
-  fail('npm pack 失败', pack.stderr.trim().slice(0, 300))
+  fail('npm pack failed', pack.stderr.trim().slice(0, 300))
   finish()
 }
 let packed = null
 try {
   packed = JSON.parse(pack.stdout)[0]
 } catch {
-  // 仍然兜底：抓 stdout 里最后一个 JSON 数组（构建脚本可能插了别的输出）
+  // Still a fallback: grab the last JSON array in stdout (a build script may have inserted other output)
   const start = pack.stdout.lastIndexOf('[')
   const end = pack.stdout.lastIndexOf(']')
   if (start >= 0 && end > start) {
@@ -308,13 +311,13 @@ try {
   }
 }
 if (packed === null) {
-  fail('无法解析 npm pack 输出')
+  fail('Cannot parse the npm pack output')
   finish()
 }
 
 tarball = path.join(options.cwd, packed.filename)
 const inside = new Set((packed.files ?? []).map((entry) => entry.path))
-pass('打包成功', `${packed.filename}（${(packed.size / 1024).toFixed(0)} kB / ${inside.size} 个文件）`)
+pass('Pack succeeded', `${packed.filename} (${(packed.size / 1024).toFixed(0)} kB / ${inside.size} files)`)
 
 const declared = [
   ...(typeof pkg.main === 'string' ? [pkg.main] : []),
@@ -323,48 +326,48 @@ const declared = [
   ...(pkg.files ?? []).filter((value) => value.includes('.')),
 ]
 const missing = [...new Set(declared.map((entry) => entry.replace(/^\.\//, '')))].filter((entry) => !inside.has(entry))
-if (missing.length === 0) pass('声明过的入口都在包里', declared.slice(0, 4).join(', '))
-else fail('声明的入口没进包（别人装上是坏的）', missing.join(', '))
-if (inside.has('package.json')) pass('package.json 在包里')
-else fail('package.json 没进包')
+if (missing.length === 0) pass('All declared entries are in the package', declared.slice(0, 4).join(', '))
+else fail('Declared entries missing from the package (broken once installed)', missing.join(', '))
+if (inside.has('package.json')) pass('package.json is in the package')
+else fail('package.json is not in the package')
 
-/* --------------------------------------------------------- 3. 干净安装 */
+/* --------------------------------------------------------- 3. Clean install */
 
 profile = `verify-${String(id).replace(/[^a-zA-Z0-9._-]/g, '-')}`
 if (options.isolate) {
   isolatedHome = mkdtempSync(path.join(tmpdir(), 'dsh-verify-home-'))
   dshEnv.DSH_HOME = isolatedHome
 }
-section('3. 干净安装（全新 profile + tarball，不走 link:）')
-info(`profile：${profile}${options.isolate ? `　DSH_HOME：${isolatedHome}` : ''}`)
+section('3. Clean install (fresh profile + tarball, no link:)')
+info(`profile: ${profile}${options.isolate ? `   DSH_HOME: ${isolatedHome}` : ''}`)
 
 const dump = run(options.dsh, ['--profile', profile, '--from-default-profile', 'web', '--dump-config'], { env: dshEnv })
-if (dump.ok) pass('验证用 profile 就绪')
-else fail('无法创建验证用 profile', dump.stderr.trim().slice(0, 300))
+if (dump.ok) pass('Verification profile is ready')
+else fail('Cannot create the verification profile', dump.stderr.trim().slice(0, 300))
 
 const add = run(options.dsh, ['plugin', '--profile', profile, 'add', `file:${tarball}`], { env: dshEnv })
 if (!add.ok) {
-  fail('tarball 安装失败', (add.stderr || add.stdout).trim().slice(0, 400))
+  fail('tarball install failed', (add.stderr || add.stdout).trim().slice(0, 400))
 } else {
-  pass('tarball 安装成功')
+  pass('tarball installed successfully')
   try {
     const composed = JSON.parse(readFileSync(path.join(dshHome(), 'profiles', profile, 'package.json'), 'utf8'))
     const bundles = composed.dsh?.profile?.bundles ?? []
-    if (bundles.includes(id)) pass('已进入 profile bundles（宿主会加载它）', id)
-    else fail('装上了但没进 bundles（不会加载）', bundles.slice(-3).join(', '))
+    if (bundles.includes(id)) pass('Added to the profile bundles (the host will load it)', id)
+    else fail('Installed but not in bundles (it will not load)', bundles.slice(-3).join(', '))
   } catch (error) {
-    warn('读不到 profile 的 package.json', String(error.message ?? error))
+    warn('Cannot read the profile package.json', String(error.message ?? error))
   }
 }
 
-/* ------------------------------------------------------------- 4. 启动 */
+/* ------------------------------------------------------------- 4. Boot */
 
-section('4. 启动验证实例')
+section('4. Boot the verification instance')
 port = options.port !== 0 ? options.port : await freePort()
-info(`端口：${port}`)
+info(`Port: ${port}`)
 
-// stdout/stderr 走文件而不是 pipe：`dsh web` 会 fork 出真正的服务进程，
-// wrapper 一退出 pipe 就关闭，之后 fork 出去那半写的 token 全部丢失。
+// stdout/stderr go to a file rather than a pipe: `dsh web` forks the real server process;
+// once the wrapper exits the pipe closes and the token written by the forked half is lost.
 const bootLogPath = path.join(tmpdir(), `dsh-verify-${String(id).replace(/[^a-zA-Z0-9._-]/g, '-')}-boot.log`)
 const bootLogFd = openSync(bootLogPath, 'w')
 const readBootLog = () => {
@@ -389,7 +392,7 @@ while (Date.now() < deadline) {
   if (child.exitCode !== null) break
   await sleep(300)
 }
-/** 从启动输出里挑出报错行（这是给「别人装不上」用的第一手证据）。 */
+/** Pick the error lines out of the boot output (the first-hand evidence for "it does not install elsewhere"). */
 function bootErrors(text) {
   return text
     .split('\n')
@@ -402,42 +405,42 @@ if (options.keep) {
   const dump = path.join(tmpdir(), `dsh-verify-${String(id).replace(/[^a-zA-Z0-9._-]/g, '-')}-boot.log`)
   try {
     writeFileSync(dump, readBootLog())
-    info(`启动输出已留存：${dump}`)
+    info(`Boot output saved to: ${dump}`)
   } catch {
-    /* 尽力而为 */
+    /* best effort */
   }
 }
-if (listening) pass('验证实例已监听', `http://127.0.0.1:${port}`)
-else fail('验证实例没有起来', readBootLog().split('\n').filter(Boolean).slice(-5).join(' | ').slice(0, 400))
+if (listening) pass('Verification instance is listening', `http://127.0.0.1:${port}`)
+else fail('Verification instance did not start', readBootLog().split('\n').filter(Boolean).slice(-5).join(' | ').slice(0, 400))
 
-// 端口活着不等于启动成功：插件树可能在绑定端口之后才失败。
+// A listening port does not mean a successful boot: the plugin tree may fail after the port is bound.
 {
   const errors = bootErrors(readBootLog())
-  if (errors.length > 0) fail('启动输出里有报错', errors.join(' ｜ ').slice(0, 500))
-  else if (listening) pass('启动输出没有报错')
+  if (errors.length > 0) fail('Errors in the boot output', errors.join(' | ').slice(0, 500))
+  else if (listening) pass('No errors in the boot output')
 }
 
-// 客户端半的静态校验（不依赖实例是否起得来）
+// Static checks of the client half (independent of whether the instance boots)
 let clientEntry = ''
 if (typeof pkg.exports?.['./client'] === 'string') clientEntry = pkg.exports['./client']
 else if (typeof pkg.exports?.['./client'] === 'object') clientEntry = pkg.exports['./client'].default ?? ''
 if (hasClient) {
-  if (clientEntry === '') fail('声明了 dsh.client 但 exports["./client"] 缺失')
+  if (clientEntry === '') fail('dsh.client is declared but exports["./client"] is missing')
   else {
     const clientFile = path.join(options.cwd, clientEntry)
-    if (!existsSync(clientFile)) fail('exports["./client"] 指向的文件不存在', clientEntry)
+    if (!existsSync(clientFile)) fail('The file exports["./client"] points at does not exist', clientEntry)
     else {
       const source = readFileSync(clientFile, 'utf8')
       const declaredId = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(source)?.[1] ?? ''
-      if (declaredId === '') fail('客户端 bundle 里找不到 __ModuleLoader__.load({ id })，shell 不会注册它')
-      else if (declaredId !== id) fail('bundle 注册 id 与包名不一致（会让整批插件加载失败）', `bundle=${declaredId} 包名=${id}`)
-      else pass('bundle 注册 id 与包名一致', declaredId)
-      if (typeof pkg.dsh.client.platform === 'string') pass('客户端平台已声明', pkg.dsh.client.platform)
-      else warn('dsh.client 没声明 platform（web 面板插件应为 "web"）')
-      if (Array.isArray(pkg.dsh.client.inject) && pkg.dsh.client.inject.length > 0) pass('客户端 inject 已声明', `${pkg.dsh.client.inject.length} 项`)
-      else warn('dsh.client.inject 为空（依赖解析可能失败）')
+      if (declaredId === '') fail('Cannot find __ModuleLoader__.load({ id }) in the client bundle; the shell will not register it')
+      else if (declaredId !== id) fail('The bundle registration id differs from the package name (it would break loading of the whole plugin batch)', `bundle=${declaredId} package=${id}`)
+      else pass('The bundle registration id matches the package name', declaredId)
+      if (typeof pkg.dsh.client.platform === 'string') pass('Client platform declared', pkg.dsh.client.platform)
+      else warn('dsh.client does not declare platform (a web panel plugin should use "web")')
+      if (Array.isArray(pkg.dsh.client.inject) && pkg.dsh.client.inject.length > 0) pass('Client inject declared', `${pkg.dsh.client.inject.length} entries`)
+      else warn('dsh.client.inject is empty (dependency resolution may fail)')
       if (inside.size > 0 && ![...inside].some((entry) => entry === clientEntry.replace(/^\.\//, ''))) {
-        fail('客户端 bundle 没进 npm 包', clientEntry)
+        fail('The client bundle is not in the npm package', clientEntry)
       }
     }
   }
@@ -446,11 +449,12 @@ if (hasClient) {
 const base = `http://127.0.0.1:${port}`
 
 /**
- * 拿到 URL 行的 token —— 这是唯一能进 Web 界面的凭据（DSH 会在启动时把
- * `dsh web: http://…/?token=…` 打到 stdout）。
+ * Get the token from the URL line — the only credential that opens the Web UI (DSH prints
+ * `dsh web: http://…/?token=…` to stdout at boot).
  *
- * 注意时序：端口在插件加载早期就 LISTEN 了，而这行 URL 要等应用全部就绪才打印，
- * 中间可能差十几秒。所以必须「等这一行」，不能一到端口就取。
+ * Watch the timing: the port is LISTENing early during plugin loading, but that URL line is printed only
+ * once the whole app is ready, possibly a dozen seconds later. So wait for the line; do not read it as
+ * soon as the port answers.
  */
 async function waitForToken(timeoutMs) {
   const deadline = Date.now() + timeoutMs
@@ -464,11 +468,11 @@ async function waitForToken(timeoutMs) {
 }
 
 let token = await waitForToken(30_000)
-if (token !== '') pass('拿到界面 token（启动输出正常）')
-else warn('30 秒内没等到带 token 的 URL 行（界面校验会跳过；可用 --token 手动给）')
+if (token !== '') pass('Got the UI token (boot output is normal)')
+else warn('No URL line with a token within 30 s (UI checks will be skipped; pass one with --token)')
 const healthPath = options.health !== '' ? options.health : `/api/${id}/probe`
 
-/** 带 Cookie 抓取；index 需要先用 token 换 Cookie（303 → 再抓一次）。 */
+/** Fetch with a cookie jar; index needs the token exchanged for a cookie (303 → fetch again). */
 const jar = new Map()
 async function browse(url, depth = 0) {
   const response = await fetch(url, {
@@ -487,7 +491,7 @@ async function browse(url, depth = 0) {
   return response
 }
 
-// 端口 ≠ 界面：webServer 先绑定端口，index/dist 的兜底处理是后注册的。
+// A port is not the UI: webServer binds the port first, and the index/dist fallbacks are registered later.
 if (listening && token !== '') {
   const readyBy = Date.now() + 30_000
   let ready = false
@@ -500,73 +504,74 @@ if (listening && token !== '') {
       }
       if (response.status !== 404 && response.status !== 502 && response.status !== 503) break
     } catch {
-      /* 还在起 */
+      /* still starting */
     }
     await sleep(500)
   }
-  if (ready) pass('Web 界面已就绪（index 200）')
-  else warn('Web 界面未能就绪（index 不是 200）')
+  if (ready) pass('Web UI is ready (index 200)')
+  else warn('Web UI did not become ready (index is not 200)')
 }
 
-/* --------------------------------------------------------- 5. 宿主半 */
+/* --------------------------------------------------------- 5. Host half */
 
-section('5. 宿主半')
+section('5. Host half')
 if (!listening) {
-  warn('实例没起来，跳过宿主半验证')
+  warn('The instance did not start; skipping the host-half check')
 } else {
   try {
     const response = await fetch(`${base}${healthPath}`)
     const text = await response.text()
-    if (response.ok) pass('健康路由可用', `${healthPath} → ${response.status} ${text.slice(0, 70)}`)
-    else fail('健康路由返回非 2xx', `${healthPath} → ${response.status} ${text.slice(0, 120)}`)
+    if (response.ok) pass('Health route is available', `${healthPath} → ${response.status} ${text.slice(0, 70)}`)
+    else fail('Health route returned a non-2xx status', `${healthPath} → ${response.status} ${text.slice(0, 120)}`)
   } catch (error) {
-    fail('健康路由打不通', `${healthPath}: ${String(error.message ?? error)}`)
-    warn('如果路径不对，用 --health <路径> 指定插件自己的健康路由')
+    fail('Health route is unreachable', `${healthPath}: ${String(error.message ?? error)}`)
+    warn("If the path is wrong, pass the plugin's own health route with --health <path>")
   }
 }
 
-/* ------------------------------------------------------- 6. 客户端半 */
+/* ------------------------------------------------------- 6. Client half */
 
-section('6. 客户端半')
+section('6. Client half')
 if (!hasClient) {
-  info('该插件没有客户端半（dsh.client 未声明），跳过')
+  info('This plugin has no client half (dsh.client is not declared); skipping')
 } else if (!listening) {
-  warn('实例没起来，跳过')
+  warn('The instance did not start; skipping')
 } else {
   try {
     const index = await browse(token === '' ? `${base}/` : `${base}/?token=${token}`)
     const html = await index.text()
-    // 交付地址的形态随 DSH 版本变过，两种都要认：
-    //   - 旧版：绝对路径 `/plugins/??<id>/client.js,…&rev=…`
-    //   - 0.1.7 起：**文档相对**（核心 dsh-client-modules 的 comboReference =
-    //     comboUrl.slice(1)，见 core note web-document-relative-app-routes），
-    //     即 `plugins/??<id>/client.js,…&rev=…`，index 里**没有**前导斜杠。
-    // 只放宽前缀，语义断言不变（清单里必须能找到本插件）。
+    // The delivery URL shape changed across DSH versions; accept both:
+    //   - older: absolute path `/plugins/??<id>/client.js,…&rev=…`
+    //   - since 0.1.7: **document-relative** (core dsh-client-modules comboReference =
+    //     comboUrl.slice(1), see the core note web-document-relative-app-routes),
+    //     i.e. `plugins/??<id>/client.js,…&rev=…`, with **no** leading slash in index.
+    // Only the prefix is relaxed; the semantic assertion (this plugin must be in the manifest) is unchanged.
     const urls = [...html.matchAll(/\/?plugins\/\?\?[^"\\\s]+/g)].map((match) => match[0].replaceAll('&amp;', '&'))
-    // 启动清单按阶段分片（多条 combo），最长那条未必含本插件——在**全部** combo 里找。
+    // The boot manifest is split into phases (several combos), and the longest one may not contain this
+    // plugin — search **all** combos.
     const bundleUrl = urls.find((url) => url.includes(`${id}/client.js`)) ?? ''
     const toAbsolute = (path) => (path.startsWith('/') ? `${base}${path}` : `${base}/${path}`)
     if (index.status === 401) {
-      warn('抓 index 被拒（没有 token），跳过运行时界面校验（静态校验已通过）')
-    } else if (urls.length === 0) fail('index 里找不到客户端 bundle 交付地址（客户端半没注册）', `HTTP ${index.status}${bootErrors(readBootLog()).length > 0 ? '｜' + bootErrors(readBootLog())[0] : ''}`)
-    else if (bundleUrl === '') fail('bundle 没进启动清单（面板/入口不会出现）', urls.join(' ｜ ').slice(0, 150))
-    else pass('bundle 已被 shell 收进启动清单', `${id}/client.js`)
+      warn('Fetching index was refused (no token); skipping the runtime UI checks (the static checks already passed)')
+    } else if (urls.length === 0) fail('Cannot find the client bundle delivery URL in index (the client half did not register)', `HTTP ${index.status}${bootErrors(readBootLog()).length > 0 ? ' | ' + bootErrors(readBootLog())[0] : ''}`)
+    else if (bundleUrl === '') fail('The bundle is not in the boot manifest (the panel/entry point will not appear)', urls.join(' | ').slice(0, 150))
+    else pass('The bundle was picked up into the shell boot manifest', `${id}/client.js`)
     if (bundleUrl !== '') {
       const bundle = await (await fetch(toAbsolute(bundleUrl))).text()
-      if (bundle.includes(id)) pass('bundle 可下载且含插件标记', `${(bundle.length / 1024).toFixed(0)} kB`)
-      else fail('bundle 内容里找不到插件 id')
+      if (bundle.includes(id)) pass('The bundle is downloadable and contains the plugin marker', `${(bundle.length / 1024).toFixed(0)} kB`)
+      else fail('Cannot find the plugin id in the bundle contents')
     }
   } catch (error) {
-    fail('客户端半验证失败', String(error.message ?? error))
+    fail('Client-half verification failed', String(error.message ?? error))
   }
 }
 
-/* --------------------------------------------------- 7. 真实动作（可选） */
+/* --------------------------------------------------- 7. Real action (optional) */
 
 if (options.restartRoute !== '') {
-  section('7. 真实动作（重启）')
+  section('7. Real action (restart)')
   if (!listening) {
-    warn('实例没起来，跳过')
+    warn('The instance did not start; skipping')
   } else {
     try {
       const before = await (await fetch(`${base}${healthPath}`)).json().catch(() => null)
@@ -576,9 +581,9 @@ if (options.restartRoute !== '') {
         body: JSON.stringify({ reason: 'portability check', source: 'portability' }),
       })
       if (response.status !== 202 && !response.ok) {
-        fail('重启请求被拒绝', `${options.restartRoute} → ${response.status}`)
+        fail('Restart request was rejected', `${options.restartRoute} → ${response.status}`)
       } else {
-        pass('重启请求已接受', `HTTP ${response.status}`)
+        pass('Restart request accepted', `HTTP ${response.status}`)
         const limit = Date.now() + 120_000
         let newPid = null
         while (Date.now() < limit) {
@@ -589,26 +594,27 @@ if (options.restartRoute !== '') {
               break
             }
           } catch {
-            /* 正在重启，端口暂时不可用 */
+            /* restarting; the port is temporarily unavailable */
           }
           await sleep(1000)
         }
-        if (newPid === null) fail('重启后服务没回来（这就是别人装上的样子）', '120s 内没等到新进程')
-        else pass('重启后服务回来了', `新 pid ${newPid}（旧 ${before?.pid ?? '?'}）`)
+        if (newPid === null) fail('The service did not come back after the restart (this is what it looks like on someone else\'s machine)', 'no new process within 120 s')
+        else pass('The service returned after the restart', `new pid ${newPid} (old ${before?.pid ?? '?'})`)
       }
     } catch (error) {
-      fail('真实动作失败', String(error.message ?? error))
+      fail('Real action failed', String(error.message ?? error))
     }
   }
 }
 
-/* ------------------------------------------------- 8. 稳定性观察（迟到崩溃） */
+/* ------------------------------------------------- 8. Stability watch (late crash) */
 
-// 这次真的栽过：`dsh web` 先绑端口、后加载插件树，于是「端口应答 / 界面 200」可能只是
-// 一段**临时**状态——新宿主几秒后死于 `plugin tree failed to load … writer lock`，
-// 而门禁在它死之前就宣布通过了。所以就绪之后必须再守一段时间，确认它没在背后死掉。
+// This has actually bitten us: `dsh web` binds the port before loading the plugin tree, so "port answers /
+// UI returns 200" may be a **temporary** state — the new host dies a few seconds later with
+// `plugin tree failed to load … writer lock`, and the gate had already declared success before it died.
+// So after readiness, watch for a while to confirm it does not die in the background.
 if (listening && !options.skipStability) {
-  section('8. 稳定性观察（就绪之后是否仍活着）')
+  section('8. Stability watch (still alive after readiness?)')
   const watchSec = Number(flag('--stability', '15')) || 15
   const deadline2 = Date.now() + watchSec * 1000
   let alive = true
@@ -620,14 +626,14 @@ if (listening && !options.skipStability) {
       const response = await fetch(`${base}${healthPath}`)
       if (!response.ok) {
         alive = false
-        firstError = `健康路由 ${response.status}`
+        firstError = `health route ${response.status}`
         break
       }
       const body = await response.json().catch(() => null)
       const pid = body?.pid ?? null
       if (lastPid !== null && pid !== null && pid !== lastPid) {
         alive = false
-        firstError = `进程被替换（${lastPid} → ${pid}）`
+        firstError = `process replaced (${lastPid} → ${pid})`
         break
       }
       lastPid = pid
@@ -639,12 +645,12 @@ if (listening && !options.skipStability) {
     }
     await sleep(2_000)
   }
-  // 顺手再看一眼启动输出里有没有新的致命行
+  // Also take one more look at the boot output for new fatal lines
   const fatal = bootErrors(readBootLog())
   if (alive && fatal.length === 0) {
-    pass(`就绪后 ${watchSec}s 内保持稳定`, `${checks} 次探测，pid ${lastPid ?? '?'}`)
+    pass(`Stable for ${watchSec}s after readiness`, `${checks} probes, pid ${lastPid ?? '?'}`)
   } else {
-    fail('就绪后没撑住（迟到崩溃 = 假成功）', firstError !== '' ? firstError : fatal.join(' ｜ ').slice(0, 300))
+    fail('Did not stay up after readiness (a late crash = a false success)', firstError !== '' ? firstError : fatal.join(' | ').slice(0, 300))
   }
 }
 

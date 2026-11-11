@@ -313,7 +313,7 @@ export function makeRoutes(deps: RouteDeps): WebRoute[] {
         if (!guard(req, res, 'POST')) return
         try {
           const snapshot = await deps.manager.refresh()
-          writeJson(res, 200, { ok: true, message: '已重新读取配置并重连。', snapshot })
+          writeJson(res, 200, { ok: true, message: 'Re-read the config and reconnected.', snapshot })
         } catch (error) {
           writeJson(res, 500, { error: describe(error) })
         }

@@ -1,47 +1,54 @@
-# dsh-mcp-manager 可移植性验证 SOP
+# dsh-mcp-manager portability verification SOP
 
-> 规则来源：`~/.dsh/AGENTS.md` 第 10 节（无条件生效）。判定标准：`2️⃣ AI/Standards/DSH插件可移植性验证清单.md`。
-> 工具来源：`DSH /DSH-test/dsh-release-kit/`（`portability.mjs` 已复制进本仓 `scripts/`）。
-> **门禁：`✅ 通过` 之前不得发布。**
+> Rule source: `~/.dsh/AGENTS.md` section 10 (always in force). Criteria: `2️⃣ AI/Standards/DSH插件可移植性验证清单.md`.
+> Tool source: `DSH /DSH-test/dsh-release-kit/` (`portability.mjs` has been copied into this repo's `scripts/`).
+> **Gate: do not publish before it says `✅ Passed`.**
 
-## 为什么这个插件尤其需要它
+## Why this plugin needs it especially
 
-本插件的核心能力是**在别人的机器上起别人的 MCP 服务器子进程**，因此它比一般插件多三类只在别人机器上才炸的风险：
+The plugin's core capability is **starting someone else's MCP server subprocess on someone else's
+machine**, so it carries three extra classes of risk that only blow up on other machines:
 
-1. **MCP 桥的解析**。插件不自己实现 MCP 协议，而是驱动 harness 自带的 `@deepseek-ai/dsh-mcp-client`
-   （见 `src/core-mcp.ts` 的解析阶梯）。装成 tarball 后这个包还找不找得到，是「装上了但连不上任何服务器」的根因。
-2. **`DSH_HOME` 而不是 `~/.dsh`**。服务器定义文件必须落在 harness 自己的 home 里；写死 `~/.dsh` 会让
-   搬迁过 home 的机器读到一份空的服务器列表，而真正配置躺在别处。
-3. **验证时定义文件不存在**。健康路由必须在**零配置**时也如实应答，否则「全新机器」会被误判成插件坏了。
+1. **MCP bridge resolution.** The plugin does not implement MCP itself; it drives the harness's
+   bundled `@deepseek-ai/dsh-mcp-client` (see the resolution ladder in `src/core-mcp.ts`). Whether
+   that package can still be found after a tarball install is the root cause of "installed, but
+   cannot connect to any server".
+2. **`DSH_HOME`, not `~/.dsh`.** Server definitions must land in the harness's own home; hardcoding
+   `~/.dsh` makes a machine with a relocated home read an empty server list while the real config
+   sits elsewhere.
+3. **No definition file during verification.** The health route must answer truthfully even with
+   **zero config**, otherwise a "fresh machine" is misread as a broken plugin.
 
-## 1. 标准动作（每次发布前）
+## 1. Standard routine (before every release)
 
 ```bash
 npm run verify:full          # = node scripts/portability.mjs --health /api/dsh-mcp-manager/probe
-npm run verify:live          # 真实实例端到端：配置 → 真 MCP 服务器 → mcp__* 工具
+npm run verify:live          # live instance end to end: config → real MCP server → mcp__* tools
 ```
 
-八步，全自动，退出码即结论：
+Eight steps, fully automatic, exit code is the verdict:
 
-| # | 步骤 | 在防什么 |
+| # | Step | What it guards against |
 | --- | --- | --- |
-| 1 | 静态体检 | 本机绝对路径 / 未加守卫的平台专有命令 / 写 `.dsh` 却不认 `DSH_HOME` |
-| 2 | `npm pack` + 入口核对 | `main`、`exports["./client"]`、`dsh.bundle.patch`、`files` 里的文件没进包 |
-| 3 | 干净安装 | 空 profile + **tarball**（不走 `link:`）；装上了有没有进 `dsh.profile.bundles` |
-| 4 | 启动 | 在**隔离的 `DSH_HOME`** 里起实例，并检出启动输出里的报错行 |
-| 5 | 宿主半 | `GET /api/dsh-mcp-manager/probe` 是否真的应答 |
-| 6 | 客户端半 | `dsh.client` 声明、bundle 注册 id **是否等于包名**、`__DSH_BOOT__.entries` 里有没有它 |
-| 7 | 真实动作 | 本插件没有重启类接口，跳过（真实动作由 `verify:live` 承担） |
-| 8 | **稳定性观察** | **就绪之后是否还活着**（迟到崩溃 = 假成功） |
+| 1 | Static audit | local absolute paths / bare platform-specific commands / writing `.dsh` while ignoring `DSH_HOME` |
+| 2 | `npm pack` + entry check | files missing from the package: `main`, `exports["./client"]`, `dsh.bundle.patch`, `files` |
+| 3 | Clean install | empty profile + **tarball** (no `link:`); whether it lands in `dsh.profile.bundles` |
+| 4 | Boot | start an instance in an **isolated `DSH_HOME`** and pick up error lines from the boot output |
+| 5 | Host half | whether `GET /api/dsh-mcp-manager/probe` really answers |
+| 6 | Client half | `dsh.client` declaration, bundle registration id **equal to the package name**, presence in `__DSH_BOOT__.entries` |
+| 7 | Real action | this plugin has no restart-style endpoint, so skipped (the real action is covered by `verify:live`) |
+| 8 | **Stability watch** | **is it still alive after readiness** (a late crash = a false success) |
 
-> 本插件的「真实动作」是 `npm run verify:live`：在隔离实例里真的起一个 stdio MCP 服务器、
-> 断言工具以 `mcp__<name>__*` 注册，再走 HTTP 新增 / 停用 / 删除一遍，证明「不需要重启」。
+> This plugin's "real action" is `npm run verify:live`: it really starts a stdio MCP server in an
+> isolated instance, asserts the tools register as `mcp__<name>__*`, then runs add / disable / remove
+> over HTTP to prove "no restart needed".
 
-## 2. 本插件的健康路由说明
+## 2. Notes on this plugin's health route
 
-`/api/dsh-mcp-manager/probe` 在**插件被停用时也返回 200**（只报 `enabled: false`）。
-这是刻意的：它是可移植性门禁的健康检查，一个「被关掉的插件」若返回 503，会被读成「安装坏了」。
-它同时报出两个开关，便于区分「故意关掉」与「启动失败」：
+`/api/dsh-mcp-manager/probe` **also returns 200 while the plugin is disabled** (it only reports
+`enabled: false`). This is deliberate: it is the health check of the portability gate, and a
+"switched-off plugin" that returned 503 would read as "the install is broken".
+It reports both switches so "switched off on purpose" and "failed to boot" can be told apart:
 
 ```json
 { "ok": true, "enabled": true, "masterSwitch": true, "serving": true,
@@ -49,54 +56,59 @@ npm run verify:live          # 真实实例端到端：配置 → 真 MCP 服务
   "bridge": "harness", "bridgeError": null }
 ```
 
-- `bridge`：`harness` / `profile` = 用的是 harness 自带那份桥；`bare` = 退回了插件自己的依赖树（版本可能漂移）。
-- `managerToolCount`：唯一能证明 agent 工具半边真的挂上了的观测点（那些工具在工具注册表上，不在路由后面）。
+- `bridge`: `harness` / `profile` = the harness's own bridge; `bare` = fell back to the plugin's own dependency tree (the version may have drifted).
+- `managerToolCount`: the only observation point that proves the agent-tool half really mounted (those tools live on the tool registry, not behind a route).
 
-## 3. 手动复核
+## 3. Manual re-check
 
 ```bash
 npm pack
-export DSH_HOME=$(mktemp -d)/dsh-home                      # ① 必须隔离
+export DSH_HOME=$(mktemp -d)/dsh-home                      # ① must be isolated
 dsh --profile verify-mcp-mgr --from-default-profile web --dump-config
 dsh plugin --profile verify-mcp-mgr add "file:$PWD/zhengjunyao-dsh-mcp-manager-0.1.0.tgz"
 python3 -c "import json;print(json.load(open('$DSH_HOME/profiles/verify-mcp-mgr/package.json'))['dsh']['profile']['bundles'])"
 dsh --profile verify-mcp-mgr --port 3456 --no-open > /tmp/verify.log 2>&1 &
-grep -n "Error\|error:" /tmp/verify.log                    # ② 端口 LISTEN ≠ 启动成功
-curl -s http://127.0.0.1:3456/api/dsh-mcp-manager/probe    # ③ 宿主半
+grep -n "Error\|error:" /tmp/verify.log                    # ② port LISTEN ≠ successful boot
+curl -s http://127.0.0.1:3456/api/dsh-mcp-manager/probe    # ③ host half
 TOKEN=$(grep -o 'token=[A-Za-z0-9_-]*' /tmp/verify.log | head -1 | cut -d= -f2)
 curl -s -L -c /tmp/ck -b /tmp/ck "http://127.0.0.1:3456/?token=$TOKEN" -o /tmp/idx.html
-grep -c "@zhengjunyao/dsh-mcp-manager/client.js" /tmp/idx.html    # ④ 客户端半
-sleep 15 && curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3456/api/dsh-mcp-manager/probe   # ⑤ 还活着吗
+grep -c "@zhengjunyao/dsh-mcp-manager/client.js" /tmp/idx.html    # ④ client half
+sleep 15 && curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3456/api/dsh-mcp-manager/probe   # ⑤ still alive?
 lsof -ti tcp:3456 -sTCP:LISTEN | xargs -r kill; rm -rf "$DSH_HOME" *.tgz
 ```
 
-## 4. 四个必须知道的坑
+## 4. Four traps you must know
 
-1. **必须隔离 `DSH_HOME`。** 同机第二个实例会等 `~/.dsh/.credentials.yaml` 的写锁直到超时
-   （`atomic-write: timed out waiting for the writer lock`）而启动失败——不隔离，验证结果全是假的。
-   本插件的 `verify:live` 也因此**从不碰真实 `~/.dsh`**。
-2. **端口 LISTEN ≠ 启动成功。** `dsh web` 先绑端口、后加载插件树；凭证写锁超时这类失败要 ~30 秒才爆。
-   所以既要看启动输出的报错行，也要在就绪后再守一段。
-3. **带 token 的 URL 行来得晚，且不能靠 pipe 抓。** `dsh web` 会 fork 出真正的服务进程，
-   wrapper 退出后 pipe 就关了，fork 出去那半写的 token 全丢——所以工具用**文件**做 stdio。
-4. **验证只能证明「别人的机器装得上、起得来」**，不能证明「连得上别人的 MCP 服务器」——
-   那取决于对方服务器本身。本插件的契约是：**配置写对了就连上，写错了如实报错，且不影响 harness 启动**。
+1. **`DSH_HOME` must be isolated.** A second instance on the same machine waits for the write lock on
+   `~/.dsh/.credentials.yaml` until it times out (`atomic-write: timed out waiting for the writer lock`)
+   and fails to boot — without isolation the verification results are all fake. This plugin's
+   `verify:live` therefore **never touches the real `~/.dsh`**.
+2. **Port LISTEN ≠ successful boot.** `dsh web` binds the port first and loads the plugin tree after;
+   failures such as a credential write-lock timeout take ~30 seconds to surface. So check the error
+   lines in the boot output *and* keep watching after readiness.
+3. **The URL line with the token arrives late and cannot be captured through a pipe.** `dsh web` forks
+   the real server process; once the wrapper exits the pipe closes and the token written by the forked
+   half is lost — that is why the tooling uses a **file** for stdio.
+4. **Verification only proves "it installs and boots on someone else's machine"**, not "it can connect
+   to someone else's MCP server" — that depends on the other server. This plugin's contract is:
+   **correct config connects, wrong config reports the error truthfully, and neither breaks the
+   harness boot**.
 
-## 5. 一票否决（任一出现即不得发布）
+## 5. Veto items (any one blocks the release)
 
-1. 源码里有本机绝对路径。
-2. 声明的入口 / 运行时按路径加载的文件没进包。
-3. tarball 装进空 profile 后没进 `dsh.profile.bundles`。
-4. 启动输出里有报错（哪怕端口能探到）。
-5. 客户端 bundle 注册 id 与包名不一致。
-6. `__DSH_BOOT__.entries` 里没有 `@zhengjunyao/dsh-mcp-manager/client.js`。
-7. 真实动作后服务没能恢复（本插件用 `verify:live` 的增删启停代替）。
-8. **就绪后没守住**（观察窗口内健康路由掉线 / 进程被替换 / 冒出新的启动致命行）。
+1. Local absolute paths in the source.
+2. A declared entry / file loaded by path at runtime is missing from the package.
+3. After installing the tarball into an empty profile it is not in `dsh.profile.bundles`.
+4. Errors in the boot output (even if the port answers).
+5. The client bundle registration id differs from the package name.
+6. `__DSH_BOOT__.entries` does not contain `@zhengjunyao/dsh-mcp-manager/client.js`.
+7. The service did not recover after the real action (this plugin uses `verify:live`'s add/remove/enable instead).
+8. **It did not hold up after readiness** (the health route dropped, the process was replaced, or new fatal boot lines appeared inside the observation window).
 
-## 6. 通过之后
+## 6. After passing
 
-1. `npm run verify:full` 输出 `✅ 通过`，`npm run verify:live` 输出 `✅ 真实实例端到端验证通过`。
-2. 把结论写进项目档案（通过 / 未通过 + 失败项）。
-3. 再走版本纪律 → git tag → npm publish → 聚合平台。
+1. `npm run verify:full` prints `✅ Passed`, `npm run verify:live` prints `✅ Live end-to-end verification passed`.
+2. Record the conclusion in the project file (pass / fail + failed items).
+3. Then follow the version discipline → git tag → npm publish → aggregate platforms.
 
-> 顺序很重要：**可移植性验证在版本纪律之前**。版本号错了可以再发一版；别人装不上是「发出去就是坏的」。
+> Order matters: **portability verification comes before the version discipline**. A wrong version number can be released again; an install that is broken for others is "broken the moment it ships".

@@ -120,7 +120,7 @@ test('importServers reads both this plugin\'s shape and a bare array', () => {
 
   const bare = importServers([{ name: 'x', command: 'node' }, { nope: 1 }])
   assert.equal(bare.accepted.length, 1)
-  assert.deepEqual(bare.skipped, ['(未命名条目)'])
+  assert.deepEqual(bare.skipped, ['(unnamed entry)'])
 })
 
 test('a state file can be found through DSH_HOME', async () => {

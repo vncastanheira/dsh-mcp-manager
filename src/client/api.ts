@@ -102,7 +102,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(path, init)
   } catch (error) {
-    throw new ManagerApiError('网络请求失败: ' + String(error instanceof Error ? error.message : error))
+    throw new ManagerApiError('Network request failed: ' + String(error instanceof Error ? error.message : error))
   }
   return await readJson<T>(response)
 }

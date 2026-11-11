@@ -113,12 +113,12 @@ export async function loadBridge(): Promise<BridgeLocation> {
   for (const anchor of harnessAnchors()) {
     const resolved = resolveFrom(anchor, BRIDGE_PACKAGE)
     if (resolved === undefined) {
-      failures.push(`${anchor}: 未找到`)
+      failures.push(`${anchor}: not found`)
       continue
     }
     try {
       const module = await import(pathToFileURL(resolved).href) as unknown as BridgeModule
-      if (typeof module.apply !== 'function') throw new Error('模块没有导出 apply()')
+      if (typeof module.apply !== 'function') throw new Error('module does not export apply()')
       const via = anchor.startsWith(process.env.DSH_PROFILE_DIR ?? '\u0000') ? 'profile' : 'harness'
       cached = { module, source: resolved, via }
       return cached
@@ -131,7 +131,7 @@ export async function loadBridge(): Promise<BridgeLocation> {
   // when the harness copy is invisible (a layout we have not seen yet).
   try {
     const module = await import(BRIDGE_PACKAGE) as unknown as BridgeModule
-    if (typeof module.apply !== 'function') throw new Error('模块没有导出 apply()')
+    if (typeof module.apply !== 'function') throw new Error('module does not export apply()')
     cached = { module, source: BRIDGE_PACKAGE, via: 'bare' }
     return cached
   } catch (error) {
@@ -139,8 +139,8 @@ export async function loadBridge(): Promise<BridgeLocation> {
   }
 
   throw new Error(
-    `找不到 ${BRIDGE_PACKAGE}（harness 内置的 MCP 桥）。已尝试：${failures.join('；')}。`
-    + '该包随 DeepSeek Harness 一同安装；若缺失，请确认使用的是官方 dsh，而不是被裁剪过的运行时。',
+    `Cannot find ${BRIDGE_PACKAGE} (the MCP bridge bundled with the harness). Tried: ${failures.join('; ')}. `
+    + 'This package ships with DeepSeek Harness; if it is missing, make sure you are running the official dsh rather than a trimmed-down runtime.',
   )
 }
 
